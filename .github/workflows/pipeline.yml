@@ -1,0 +1,447 @@
+# The one pipeline every app on the platform runs. An app repo keeps a short
+# caller workflow (see README) and gets, for free and always up to date:
+#
+#   every PR and push      gates: Gitleaks, Semgrep, Trivy fs, hadolint, tests
+#   push to develop        build -> Trivy image -> push to GHCR -> deploy to UAT
+#   push to hotfix/<name>  same, but deployed to the staging environment
+#   push to staging        promote the UAT images (never rebuilt) to staging
+#   run by hand on main    promote staging's images to prod, after approval
+#
+# Deploys are GitOps commits: CI never touches the cluster. Argo CD (inside
+# the cluster) sees the new image digests and rolls them out.
+#
+# Conventions the app must follow (the onboarding template sets them up):
+#   - branches develop, staging, main, hotfix/<name>
+#   - one folder per component (backend/, frontend/, ...) with package.json
+#   - docker/<component>.Dockerfile, built with the component folder as context
+#   - GitHub Environments uat, staging, production (production: main only,
+#     with a required reviewer) and the secret GITOPS_DEPLOY_KEY
+#   - a GitOps folder apps/<app>/envs/<env>/values.yaml (rssb-app chart) whose
+#     images are ghcr.io/<org>/<app>-<component>
+#
+# Supply-chain rules for this file:
+# - Every action is pinned to a full commit SHA (tags can be repointed: see the
+#   March 2026 trivy-action compromise). The comment records the human version.
+# - Scanners run from container images pinned by digest, not from third-party
+#   wrapper actions.
+# - Each job asks only for the permissions it needs; the caller grants at most
+#   contents: read + packages: write.
+# - Inputs are passed to shell through environment variables, never
+#   interpolated into scripts.
+
+name: Pipeline
+
+on:
+  workflow_call:
+    inputs:
+      app:
+        description: Product name, lowercase (image prefix, GitOps folder apps/<app>)
+        type: string
+        required: true
+      components:
+        description: 'JSON list of components to test and build, e.g. ["backend", "frontend"]'
+        type: string
+        required: true
+      node-version:
+        description: Node major for tests (the Dockerfiles pin their own)
+        type: string
+        default: "22"
+      package-manager:
+        description: npm or yarn
+        type: string
+        default: npm
+      checks:
+        description: package.json scripts run on every component, in order
+        type: string
+        default: format:check lint typecheck test build
+      dockerfile-dir:
+        description: Folder holding <component>.Dockerfile
+        type: string
+        default: docker
+      gitops-repo:
+        description: GitOps repository (owner/name) that Argo CD watches
+        type: string
+        default: DEVOPS-CANARY/GitOps-Repo
+    secrets:
+      GITOPS_DEPLOY_KEY:
+        description: SSH deploy key with write access to the GitOps repository
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  GITLEAKS_IMAGE: zricethezav/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f
+  SEMGREP_IMAGE: semgrep/semgrep:1.180.0@sha256:529ee8a277ec8adc5b534d7c74eea0a47e9de21d62852b6ba7ac6ba9566845c3
+  TRIVY_IMAGE: aquasec/trivy:0.75.0@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa
+  HADOLINT_IMAGE: hadolint/hadolint:v2.15.1-alpine@sha256:a1d49ae1a4e83c1dbad26b8c1ad7588c8bd1e04f4866b34ad3cac50335198552
+  # Block on fixable High/Critical vulnerabilities. Accepted risks go in the
+  # app's .trivyignore with a reason and an expiry, never by lowering this bar.
+  TRIVY_SEVERITY: HIGH,CRITICAL
+
+jobs:
+  # ----------------------------------------------------------------- plan ---
+  # Decides, from the event and branch, what this run does. Every other job
+  # reads these outputs, so the rules live in one place.
+  plan:
+    name: Plan
+    runs-on: ubuntu-latest
+    outputs:
+      registry: ${{ steps.plan.outputs.registry }}
+      build: ${{ steps.plan.outputs.build }}
+      push: ${{ steps.plan.outputs.push }}
+      deploy: ${{ steps.plan.outputs.deploy }}
+      environment: ${{ steps.plan.outputs.environment }}
+      image-from: ${{ steps.plan.outputs.image-from }}
+      same-as: ${{ steps.plan.outputs.same-as }}
+    env:
+      APP: ${{ inputs.app }}
+      COMPONENTS: ${{ inputs.components }}
+      PACKAGE_MANAGER: ${{ inputs.package-manager }}
+    steps:
+      - name: Validate inputs
+        run: |
+          [[ "$APP" =~ ^[a-z][a-z0-9-]{0,30}$ ]] || { echo "::error::app must be lowercase letters, digits and '-', got '$APP'"; exit 1; }
+          echo "$COMPONENTS" | jq -e 'type == "array" and length > 0 and all(.[]; test("^[a-z][a-z0-9-]{0,30}$"))' >/dev/null \
+            || { echo "::error::components must be a JSON list of lowercase names, got '$COMPONENTS'"; exit 1; }
+          [[ "$PACKAGE_MANAGER" =~ ^(npm|yarn)$ ]] || { echo "::error::package-manager must be npm or yarn"; exit 1; }
+
+      - name: Decide
+        id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          # GHCR paths must be lowercase; the org name keeps its capitals.
+          echo "registry=ghcr.io/${OWNER,,}/$APP" >> "$GITHUB_OUTPUT"
+          build=true push=false deploy="" environment="" from="" same=""
+          case "$EVENT:$REF" in
+            push:refs/heads/develop)     push=true;  deploy=uat;     environment=uat;        from=commit ;;
+            push:refs/heads/hotfix/*)    push=true;  deploy=staging; environment=staging;    from=commit ;;
+            push:refs/heads/staging)     build=false; deploy=staging; environment=staging;   from=content ;;
+            workflow_dispatch:refs/heads/main)
+                                         build=false; deploy=prod;    environment=production; from=content; same=staging ;;
+            pull_request:*|workflow_dispatch:*) ;; # gates and build only, nothing pushed
+            *) echo "::warning::Nothing to deploy for $EVENT on $REF; running the gates only" ;;
+          esac
+          {
+            echo "build=$build"; echo "push=$push"; echo "deploy=$deploy"
+            echo "environment=$environment"; echo "image-from=$from"; echo "same-as=$same"
+          } >> "$GITHUB_OUTPUT"
+          echo "build=$build push=$push deploy=${deploy:-none}"
+
+  # ---------------------------------------------------------------- gates ---
+  secrets:
+    name: Secret scan (Gitleaks)
+    needs: plan
+    if: needs.plan.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # scan the whole history, not just the last commit
+          persist-credentials: false
+      - run: docker run --rm -v "$PWD:/src" "$GITLEAKS_IMAGE" git /src --redact --no-banner
+
+  sast:
+    name: SAST (Semgrep)
+    needs: plan
+    if: needs.plan.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: >
+          docker run --rm -v "$PWD:/src" -w /src "$SEMGREP_IMAGE"
+          semgrep scan --config p/default --config p/typescript --config p/nodejs
+          --metrics=off --error --severity ERROR --severity WARNING
+
+  dependencies:
+    name: Dependency scan (Trivy fs)
+    needs: plan
+    if: needs.plan.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: >
+          docker run --rm -v "$PWD:/src" "$TRIVY_IMAGE"
+          fs --scanners vuln --severity "$TRIVY_SEVERITY" --ignore-unfixed
+          --exit-code 1 --no-progress /src
+
+  dockerfile-lint:
+    name: Dockerfile lint (hadolint)
+    needs: plan
+    if: needs.plan.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    env:
+      DOCKERFILE_DIR: ${{ inputs.dockerfile-dir }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: |
+          shopt -s nullglob
+          files=("$DOCKERFILE_DIR"/*.Dockerfile)
+          [ ${#files[@]} -gt 0 ] || { echo "::error::no $DOCKERFILE_DIR/*.Dockerfile found"; exit 1; }
+          for f in "${files[@]}"; do
+            echo "::group::$f"
+            docker run --rm -v "$PWD:/src" -w /src "$HADOLINT_IMAGE" hadolint "$f"
+            echo "::endgroup::"
+          done
+
+  test:
+    name: Test (${{ matrix.component }})
+    needs: plan
+    if: needs.plan.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        component: ${{ fromJSON(inputs.components) }}
+    defaults:
+      run:
+        working-directory: ${{ matrix.component }}
+    env:
+      PM: ${{ inputs.package-manager }}
+      CHECKS: ${{ inputs.checks }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: ${{ inputs.package-manager }}
+          cache-dependency-path: ${{ matrix.component }}/${{ inputs.package-manager == 'yarn' && 'yarn.lock' || 'package-lock.json' }}
+      - name: Install (from the lockfile, exactly)
+        run: |
+          if [ "$PM" = yarn ]; then
+            corepack enable # the Yarn version the app pins in package.json
+            yarn install --frozen-lockfile
+          else
+            npm ci
+          fi
+      - name: Checks
+        run: |
+          for script in $CHECKS; do
+            echo "::group::$PM run $script"
+            "$PM" run "$script"
+            echo "::endgroup::"
+          done
+
+  # ---------------------------------------------------------------- image ---
+  image:
+    name: Image (${{ matrix.component }})
+    needs: [plan, secrets, sast, dependencies, dockerfile-lint, test]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write # push to GHCR (only when the plan says so)
+    strategy:
+      fail-fast: false
+      matrix:
+        component: ${{ fromJSON(inputs.components) }}
+    env:
+      IMAGE: ${{ needs.plan.outputs.registry }}-${{ matrix.component }}
+      PUSH: ${{ needs.plan.outputs.push }}
+      COMPONENT: ${{ matrix.component }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Two tags per image:
+      #   sha-<commit>  traceability: exactly which commit produced it
+      #   tree-<hash>   content identity: survives the merge into staging/main,
+      #                 so promotion finds the image tested in UAT without rebuilding
+      - name: Compute tags
+        id: tags
+        run: |
+          echo "sha=sha-$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "tree=tree-$(git rev-parse 'HEAD^{tree}')" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: ${{ matrix.component }}
+          file: ${{ inputs.dockerfile-dir }}/${{ matrix.component }}.Dockerfile
+          load: true # into the local daemon so it can be scanned before any push
+          push: false
+          tags: |
+            ${{ env.IMAGE }}:${{ steps.tags.outputs.sha }}
+            ${{ env.IMAGE }}:${{ steps.tags.outputs.tree }}
+          cache-from: type=gha,scope=${{ matrix.component }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.component }}
+
+      - name: Scan image (Trivy)
+        run: >
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock "$TRIVY_IMAGE"
+          image --scanners vuln --severity "$TRIVY_SEVERITY" --ignore-unfixed
+          --exit-code 1 --no-progress "$IMAGE:${{ steps.tags.outputs.sha }}"
+
+      - name: Log in to GHCR
+        if: env.PUSH == 'true'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push
+        if: env.PUSH == 'true'
+        env:
+          SHA_TAG: ${{ steps.tags.outputs.sha }}
+          TREE_TAG: ${{ steps.tags.outputs.tree }}
+        run: |
+          docker push "$IMAGE:$SHA_TAG"
+          docker push "$IMAGE:$TREE_TAG"
+          digest=$(docker inspect --format '{{index .RepoDigests 0}}' "$IMAGE:$SHA_TAG")
+          {
+            echo "### $COMPONENT"
+            echo "- \`$SHA_TAG\`"
+            echo "- \`$TREE_TAG\`"
+            echo "- digest: \`$digest\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # --------------------------------------------------------------- deploy ---
+  # One deploy job for every environment. Which images: the ones tagged for
+  # this run's commit (image-from: commit) or the ones built from exactly this
+  # content (image-from: content). A merge into staging or main has the same
+  # content (git tree) as what develop built, so it finds those images by
+  # their tree- tag instead of rebuilding them.
+  deploy:
+    name: Deploy to ${{ needs.plan.outputs.deploy }} (GitOps commit)
+    needs: [plan, image]
+    # Runs when the plan says deploy, and the images are either freshly built
+    # and pushed (success) or found by content (image skipped on purpose).
+    # A failed gate skips image too, but then build is 'true', so no deploy.
+    if: >-
+      !cancelled() && needs.plan.outputs.deploy != '' &&
+      (needs.image.result == 'success' ||
+       (needs.image.result == 'skipped' && needs.plan.outputs.build == 'false'))
+    runs-on: ubuntu-latest
+    environment: ${{ needs.plan.outputs.environment }}
+    permissions:
+      contents: read
+      packages: read # resolve image digests in GHCR
+    concurrency:
+      group: gitops-${{ inputs.app }}-${{ needs.plan.outputs.deploy }}
+      cancel-in-progress: false # every deploy commit lands, in order
+    env:
+      APP: ${{ inputs.app }}
+      COMPONENTS: ${{ inputs.components }}
+      REGISTRY: ${{ needs.plan.outputs.registry }}
+      GITOPS_REPO: ${{ inputs.gitops-repo }}
+      ENV_NAME: ${{ needs.plan.outputs.deploy }}
+      IMAGE_FROM: ${{ needs.plan.outputs.image-from }}
+      SAME_AS: ${{ needs.plan.outputs.same-as }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Pin by digest, not tag: a tag can be moved, a digest is the exact bytes
+      # that were scanned. Written as "component=digest" lines for later steps.
+      - name: Resolve image digests
+        id: digests
+        run: |
+          tree=$(git rev-parse 'HEAD^{tree}')
+          case "$IMAGE_FROM" in
+            commit)  tag="sha-$GITHUB_SHA" ;;
+            content) tag="tree-$tree" ;;
+            *) echo "::error::image-from must be 'commit' or 'content', not '$IMAGE_FROM'"; exit 1 ;;
+          esac
+          : > digests.txt
+          for component in $(jq -r '.[]' <<<"$COMPONENTS"); do
+            ref="$REGISTRY-$component:$tag"
+            if ! d=$(docker buildx imagetools inspect "$ref" --format '{{json .Manifest.Digest}}' 2>/dev/null | tr -d '"') || [ -z "$d" ]; then
+              echo "::error::No image $ref. Only content that develop built (and deployed to UAT) can be promoted: merge develop into this branch without other changes, or ship the change through develop first."
+              exit 1
+            fi
+            echo "$component=$d" >> digests.txt
+          done
+          cat digests.txt
+          echo "note=${GITHUB_REF_NAME}@${GITHUB_SHA::7} tree-${tree::8}" >> "$GITHUB_OUTPUT"
+
+      - name: Check out the GitOps repo
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ inputs.gitops-repo }}
+          ssh-key: ${{ secrets.GITOPS_DEPLOY_KEY }} # write deploy key for that one repo
+          path: gitops
+          persist-credentials: true # needed to push the deploy commit
+
+      # Prod gets only what staging runs, so nothing reaches prod untested there.
+      - name: Check the digests match ${{ needs.plan.outputs.same-as }}
+        if: needs.plan.outputs.same-as != ''
+        run: |
+          file="gitops/apps/$APP/envs/$SAME_AS/values.yaml"
+          [ -f "$file" ] || { echo "::error::$file not found: $SAME_AS has never been deployed"; exit 1; }
+          while IFS='=' read -r component want; do
+            image="$REGISTRY-$component"
+            # Several components can use one image (a backend and its worker), so
+            # take the distinct digests: they must all be this one.
+            runs=$(grep -A1 -E "^ +repository: ${image//./\\.}$" "$file" | grep -oE 'sha256:[0-9a-f]{64}' | sort -u || true)
+            if [ "$runs" != "$want" ]; then
+              echo "::error::$SAME_AS runs $component ${runs:-<none>}, this release is $want. Merge the same content to $SAME_AS first and let it deploy there."
+              exit 1
+            fi
+          done < digests.txt
+          echo "$SAME_AS runs the same digests."
+
+      - name: Commit the new digests
+        working-directory: gitops
+        env:
+          NOTE: ${{ steps.digests.outputs.note }}
+        run: |
+          file="apps/$APP/envs/$ENV_NAME/values.yaml"
+          [ -f "$file" ] || { echo "::error::$file not found in $GITOPS_REPO: onboard the app's $ENV_NAME environment first"; exit 1; }
+          # Pin one image to its digest, changing only that line so comments and
+          # layout stay intact. Expects the rssb-app chart's shape:
+          #   image:
+          #     repository: ghcr.io/<org>/<app>-<component>
+          #     digest: sha256:... # note
+          set_digest() {
+            local image=$1 digest=$2 pattern
+            pattern="^ +repository: ${image//./\\.}$"
+            grep -qE "$pattern" "$file" || { echo "::error::image '$image' not found in $file"; exit 1; }
+            sed -i -E "\|${pattern}|{n;s|^( +)digest: .*|\1digest: ${digest} # ${NOTE}|}" "$file"
+          }
+          while IFS='=' read -r component digest; do
+            set_digest "$REGISTRY-$component" "$digest"
+          done < ../digests.txt
+          if git diff --quiet; then
+            echo "$ENV_NAME already runs these digests; nothing to commit." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -qam "$ENV_NAME: $APP $NOTE" \
+            -m "Source: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA}" \
+            -m "Pipeline: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          # Another deploy (another app or environment) may have landed first:
+          # rebase onto it and retry. Fail if it still can't push.
+          pushed=false
+          for _ in 1 2 3; do
+            if git push; then pushed=true; break; fi
+            git pull --rebase
+          done
+          $pushed || { echo "::error::could not push to $GITOPS_REPO after 3 attempts"; exit 1; }
+          {
+            echo "### Deployed $APP to $ENV_NAME via GitOps"
+            echo "- GitOps commit: ${GITHUB_SERVER_URL}/${GITOPS_REPO}/commit/$(git rev-parse HEAD)"
+            sed 's/^/- /' ../digests.txt
+            echo "Argo CD syncs it within its polling interval (~3 min)."
+          } >> "$GITHUB_STEP_SUMMARY"
