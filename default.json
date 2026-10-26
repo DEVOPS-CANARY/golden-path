@@ -30,6 +30,23 @@
       "enabled": false
     },
     {
+      "description": "Version-only fields: no digest can be pinned on Argo CD chart versions or on renovate-version",
+      "matchFileNames": [
+        "bootstrap/argo-config/**"
+      ],
+      "pinDigests": false
+    },
+    {
+      "description": "renovate-version in the Renovate workflow is a plain version, not an image reference",
+      "matchManagers": [
+        "github-actions"
+      ],
+      "matchDepNames": [
+        "ghcr.io/renovatebot/renovate"
+      ],
+      "pinDigests": false
+    },
+    {
       "description": "Security fixes may come at any time and need no waiting period",
       "matchDatasources": [
         "npm"
