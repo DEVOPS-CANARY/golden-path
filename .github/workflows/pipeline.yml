@@ -151,11 +151,16 @@ jobs:
 
   # Commit messages decide the next version (Conventional Commits), so a PR
   # with a message that doesn't follow the format is refused here, not found
-  # out at release time. Merge commits are not checked; "Revert ..." is fine.
+  # out at release time. Checked where commits are new: PRs into develop and
+  # hotfix PRs. Promotion PRs (develop -> staging -> main) only move commits
+  # that were already checked, and carry history from before the rule.
+  # Merge commits are not checked; "Revert ..." is fine.
   commits:
     name: Commit messages (Conventional Commits)
     needs: plan
-    if: github.event_name == 'pull_request'
+    if: >-
+      github.event_name == 'pull_request' &&
+      (github.base_ref == 'develop' || startsWith(github.head_ref, 'hotfix/'))
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
