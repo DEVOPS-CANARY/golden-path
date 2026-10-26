@@ -8,7 +8,7 @@ declares what its app needs; this repo does the rest through reviewed pull reque
 | **Shared pipeline** (`.github/workflows/pipeline.yml`): gates, build, scan, push, deploy, promote | ✅ v1 |
 | **Onboarding**: the "Onboard an app" issue form, Copier templates for the app repo and the GitOps folder, a workflow that opens the PRs | ✅ v1.2 |
 | Per-namespace guardrails (Kyverno): walls, quota, limits, image rule | ✅ in [GitOps-Repo](https://github.com/DEVOPS-CANARY/GitOps-Repo) `platform/policies` |
-| Bot identity: the `goldenpath-bot` GitHub App (short-lived tokens, no personal tokens) | ✅ for onboarding; deploys and releases next |
+| Bot identity: the `goldenpath-bot` GitHub App (short-lived tokens, no personal tokens) | ✅ onboarding and deploys (deploy keys retired); releases next |
 | Versioned releases, automatic updates (Renovate) | planned |
 
 ## Onboarding an app
@@ -93,7 +93,6 @@ jobs:
       components: '["backend", "frontend"]'
     secrets:
       GOLDEN_PATH_APP_KEY: ${{ secrets.GOLDEN_PATH_APP_KEY }} # org secret: deploys write to GitOps as the platform's App
-      GITOPS_DEPLOY_KEY: ${{ secrets.GITOPS_DEPLOY_KEY }} # fallback until the App is configured
 ```
 
 What the app then gets:
@@ -122,10 +121,10 @@ touches the cluster.
 | `dockerfile-dir` | | `docker` | Folder holding `<component>.Dockerfile` |
 | `gitops-repo` | | `DEVOPS-CANARY/GitOps-Repo` | Where deploys are committed |
 
-Secrets: `GOLDEN_PATH_APP_KEY` (org secret, the `goldenpath-bot` App's private key; with the
+Secret `GOLDEN_PATH_APP_KEY`: an org secret, the `goldenpath-bot` App's private key. With the
 org variable `GOLDEN_PATH_APP_ID`, each deploy mints a one-hour token for the GitOps repo and
-commits as the App) or, until the App is configured, `GITOPS_DEPLOY_KEY`, an SSH deploy key
-with write access to the GitOps repo.
+commits as the App. No per-app keys. (An org without the App can still pass an SSH deploy key
+as `GITOPS_DEPLOY_KEY`.)
 
 ### What the app repo must have
 
@@ -133,7 +132,7 @@ with write access to the GitOps repo.
 - One folder per component with its `package.json`, lockfile and the scripts in `checks`.
 - `docker/<component>.Dockerfile`, built with the component folder as its context.
 - GitHub Environments `uat` (branch `develop`), `staging` (`staging`, `hotfix/*`) and
-  `production` (`main` only, **required reviewer**), plus the secret `GITOPS_DEPLOY_KEY`.
+  `production` (`main` only, **required reviewer**).
 - In GitOps-Repo: `apps/<app>/values.yaml` and `apps/<app>/envs/<env>/values.yaml` for each
   environment, using the `rssb-app` chart, with each component's image as
   `repository: ghcr.io/<org>/<app>-<component>` followed by a `digest:` line.
