@@ -1,0 +1,158 @@
+# Turns an approved "Onboard an app" issue into pull requests.
+#
+#   label "preview"   renders the templates and posts the result on the issue
+#                     (no access to other repos needed)
+#   label "approved"  renders, then opens one PR in the app's repository and
+#                     one in GitOps-Repo, and links them on the issue
+#
+# Only people who can add labels (triage and above) can trigger it, and the
+# PRs are reviewed like any other: nothing runs until they are merged.
+#
+# Secret ONBOARDING_TOKEN: how this workflow writes to the other repos. A
+# GitHub App installation token or a fine-grained token with contents +
+# pull-requests write on the app repos and GitOps-Repo. Without it, "approved"
+# stops with a clear message; "preview" still works.
+name: Onboard an app
+
+on:
+  issues:
+    types: [labeled]
+
+permissions:
+  contents: read
+  issues: write # comments on the issue
+
+concurrency:
+  group: onboard-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+env:
+  COPIER_VERSION: "9.18.1"
+
+jobs:
+  onboard:
+    name: ${{ github.event.label.name }}
+    if: github.event.label.name == 'preview' || github.event.label.name == 'approved'
+    runs-on: ubuntu-latest
+    env:
+      MODE: ${{ github.event.label.name }}
+      ISSUE: ${{ github.event.issue.number }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Install Copier
+        run: pip install --quiet --disable-pip-version-check "copier==$COPIER_VERSION"
+
+      # The form's answers, validated. An invalid form is reported on the issue.
+      - name: Read the form
+        env:
+          ISSUE_BODY: ${{ github.event.issue.body }}
+        run: |
+          printf '%s' "$ISSUE_BODY" > issue.md
+          if ! python scripts/onboarding_answers.py issue.md > answers.json 2> error.txt; then
+            # shellcheck disable=SC2016 # backticks in the comment text are Markdown, not shell
+            gh issue comment "$ISSUE" --body "$(printf ':x: The form has a problem, please edit it and add the label again:\n\n```\n%s\n```' "$(cat error.txt)")"
+            gh issue edit "$ISSUE" --remove-label "$MODE"
+            exit 1
+          fi
+          jq -r 'to_entries[] | "\(.key)=\(.value)"' answers.json | grep -v '^owner=' >> "$GITHUB_ENV"
+
+      # Rendered from this repo's latest release tag (Copier's default for a git
+      # template), so an app always gets a released template version and
+      # `copier update` can later move it to the next one.
+      - name: Render the templates
+        run: |
+          OUT="$RUNNER_TEMP/out"; echo "OUT=$OUT" >> "$GITHUB_ENV"
+          mkdir -p "$OUT/app" "$OUT/gitops"
+          copier copy --defaults --trust --data-file answers.json --data template=app-repo . "$OUT/app"
+          copier copy --defaults --trust --data-file answers.json --data template=gitops-app . "$OUT/gitops"
+          (cd "$OUT" && find . -type f | sort | sed 's#^\./##') > "$GITHUB_WORKSPACE/files.txt"
+          cat files.txt
+
+      - name: Post the preview
+        if: env.MODE == 'preview'
+        run: |
+          {
+            echo "### Preview for \`$app\` (\`$repository\`)"
+            echo
+            echo "These files would be opened as pull requests when the **approved** label is added:"
+            echo
+            echo '```'; cat files.txt; echo '```'
+            while read -r f; do
+              echo "<details><summary><code>$f</code></summary>"; echo; echo '```'; cat "$OUT/$f"; echo '```'; echo "</details>"
+            done < files.txt
+          } > preview.md
+          gh issue comment "$ISSUE" --body-file preview.md
+          gh issue edit "$ISSUE" --remove-label preview
+
+      # One PR per repository, on branch onboard/golden-path. Files are copied
+      # over the checkout, so re-running updates the same branch.
+      - name: Open the pull requests
+        if: env.MODE == 'approved'
+        env:
+          ONBOARDING_TOKEN: ${{ secrets.ONBOARDING_TOKEN }}
+          GITOPS_REPO: DEVOPS-CANARY/GitOps-Repo
+        run: |
+          if [ -z "$ONBOARDING_TOKEN" ]; then
+            gh issue comment "$ISSUE" --body ":x: \`ONBOARDING_TOKEN\` is not set on this repository, so the pull requests cannot be opened. Add the token (see README), then add the **approved** label again."
+            gh issue edit "$ISSUE" --remove-label approved
+            exit 1
+          fi
+          git config --global user.name "golden-path[bot]"
+          git config --global user.email "golden-path-bot@users.noreply.github.com"
+          # git pushes and `gh pr create` on the target repos use the onboarding token.
+          export GH_TOKEN="$ONBOARDING_TOKEN"
+          gh auth setup-git
+          open_pr() { # <repo> <rendered-dir> <base-branch-preference> <title> <body-file>
+            local repo=$1 src=$2 prefer=$3 title=$4 body=$5 dir base
+            dir=$(mktemp -d)
+            git clone --quiet "https://github.com/$repo.git" "$dir"
+            if git -C "$dir" branch -r | grep -qE "origin/$prefer$"; then base=$prefer; else base=$(git -C "$dir" rev-parse --abbrev-ref HEAD); fi
+            git -C "$dir" checkout --quiet "$base"
+            git -C "$dir" checkout --quiet -B onboard/golden-path
+            cp -R "$src"/. "$dir"/
+            git -C "$dir" add -A
+            if git -C "$dir" diff --cached --quiet; then echo "$repo: nothing to change"; return 0; fi
+            git -C "$dir" commit --quiet -m "$title" -m "Rendered by the golden path from $GITHUB_SERVER_URL/$GH_REPO/issues/$ISSUE"
+            git -C "$dir" push --quiet --force-with-lease origin onboard/golden-path
+            url=$(gh pr list --repo "$repo" --head onboard/golden-path --json url --jq '.[0].url')
+            [ -n "$url" ] || url=$(gh pr create --repo "$repo" --base "$base" --head onboard/golden-path --title "$title" --body-file "$body")
+            echo "$url"
+          }
+          cat > app-pr.md <<EOF
+          Opened by the golden path from $GITHUB_SERVER_URL/$GH_REPO/issues/$ISSUE.
+
+          Adds the shared pipeline caller and the Dockerfiles for **$app**. Before merging:
+          - [ ] Branches \`develop\`, \`staging\`, \`main\` exist; hotfixes go on \`hotfix/<name>\`
+          - [ ] GitHub Environments \`uat\` (develop), \`staging\` (staging, hotfix/*), \`production\` (main, required reviewer)
+          - [ ] Secret \`GITOPS_DEPLOY_KEY\`: a deploy key with write access on \`$GITOPS_REPO\`
+          - [ ] Each component folder has the scripts the pipeline runs: \`format:check lint typecheck test build\`
+          - [ ] The GitOps PR is merged first (the first deploy needs the environment to exist)
+
+          Every PR here then runs the gates; a merge to \`develop\` deploys to UAT.
+          EOF
+          cat > gitops-pr.md <<EOF
+          Opened by the golden path from $GITHUB_SERVER_URL/$GH_REPO/issues/$ISSUE.
+
+          Adds \`apps/$app\` with its UAT environment (rssb-app chart). Image digests are placeholders
+          until the app's first deploy from \`develop\` writes the real ones. Before merging:
+          - [ ] Seal the secrets listed in \`apps/$app/envs/uat/secrets/README.md\`
+          - [ ] Lab: add \`$(echo "$app" | tr 'a-z-' 'A-Z_')_UAT_*_PASSWORD\` to team-secrets and run \`scripts/lab-services.sh\`
+          - [ ] Review the shared values (ports, routes, env) with the app's developers
+
+          Once merged, Argo CD creates namespace \`$app-uat\` (walled by policy) and waits for the first image.
+          EOF
+          app_pr=$(open_pr "$repository" "$OUT/app" develop "Golden path: pipeline caller and Dockerfiles for $app" app-pr.md)
+          gitops_pr=$(open_pr "$GITOPS_REPO" "$OUT/gitops" main "Onboard $app: UAT environment" gitops-pr.md)
+          export GH_TOKEN="${{ secrets.GITHUB_TOKEN }}"
+          # shellcheck disable=SC2016 # backticks in the comment text are Markdown, not shell
+          gh issue comment "$ISSUE" --body "$(printf ':rocket: Pull requests opened for `%s`:\n- app repository: %s\n- GitOps-Repo: %s\n\nMerge the GitOps one first, then the app one.' "$app" "$app_pr" "$gitops_pr")"
+          gh issue edit "$ISSUE" --remove-label approved --add-label "prs-opened"

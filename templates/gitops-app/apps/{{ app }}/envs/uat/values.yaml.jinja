@@ -1,0 +1,53 @@
+# {{ app }} in UAT. Deployed on every merge to the app's develop branch.
+# Shared settings: ../../values.yaml. Image digests are written by CI.
+
+chart:
+  version: {{ chart_version }} # rssb-app chart version for this environment (read by Argo CD)
+
+global:
+  host: uat.{{ app }}.{{ host_domain }}
+  imagePullSecrets: [ghcr-pull] # sealed in secrets/ (see secrets/README.md)
+
+components:
+{%- if backend != 'none' %}
+  backend:
+    image:
+      repository: {{ registry }}/{{ app }}-backend
+      digest: sha256:0000000000000000000000000000000000000000000000000000000000000000 # placeholder: the first deploy from develop writes the real digest
+    env:
+      ALLOWED_ORIGINS: http://uat.{{ app }}.{{ host_domain }}
+{%- if needs_redis %}
+      # Redis: every key and channel starts with this, the only prefix this
+      # environment's Redis user may use (REDIS_URL is sealed in backend-secrets).
+      REDIS_KEY_PREFIX: "{{ app }}:uat:"
+{%- endif %}
+{%- if needs_kafka %}
+      # Kafka: this user may only use topics and consumer groups starting with
+      # the prefix (KAFKA_PASSWORD is sealed in backend-secrets).
+      KAFKA_USERNAME: {{ app }}_uat
+      KAFKA_TOPIC_PREFIX: uat.{{ app }}.
+{%- endif %}
+{%- endif %}
+{%- if frontend != 'none' %}
+
+  frontend:
+    image:
+      repository: {{ registry }}/{{ app }}-frontend
+      digest: sha256:0000000000000000000000000000000000000000000000000000000000000000 # placeholder: the first deploy from develop writes the real digest
+{%- endif %}
+{%- if worker %}
+
+  {{ worker }}: # the worker: shared settings in ../../values.yaml
+    image:
+      repository: {{ registry }}/{{ app }}-backend
+      digest: sha256:0000000000000000000000000000000000000000000000000000000000000000 # placeholder: the first deploy from develop writes the real digest
+{%- if needs_kafka %}
+    env:
+      KAFKA_USERNAME: {{ app }}_uat
+      KAFKA_TOPIC_PREFIX: uat.{{ app }}.
+    autoscaling: # KEDA lag scaling: shared settings in ../../values.yaml
+      kafka:
+        topic: uat.{{ app }}.events # CHANGE to the topic the worker consumes
+        consumerGroup: uat.{{ app }}.{{ worker }}
+{%- endif %}
+{%- endif %}

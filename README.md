@@ -6,8 +6,47 @@ declares what its app needs; this repo does the rest through reviewed pull reque
 | Part | Status |
 |---|---|
 | **Shared pipeline** (`.github/workflows/pipeline.yml`): gates, build, scan, push, deploy, promote | ✅ v1 |
-| Onboarding form + templates (app repo, GitOps folder) | next |
-| Per-namespace guardrails (Kyverno), bot identity, automatic updates (Renovate) | planned |
+| **Onboarding**: the "Onboard an app" issue form, Copier templates for the app repo and the GitOps folder, a workflow that opens the PRs | ✅ v1.1 (PRs need `ONBOARDING_TOKEN`, see below) |
+| Per-namespace guardrails (Kyverno): walls, quota, limits, image rule | ✅ in [GitOps-Repo](https://github.com/DEVOPS-CANARY/GitOps-Repo) `platform/policies` |
+| Versioned releases, bot identity (GitHub App), automatic updates (Renovate) | planned |
+
+## Onboarding an app
+
+1. Open an issue from the **Onboard an app** form: app name, repository, components,
+   package manager, what it needs (Postgres, Redis, Kafka), owner, readiness ticks.
+2. Add the label **preview**: the workflow renders the templates and posts every generated
+   file on the issue. Fix the form if needed and preview again.
+3. A platform maintainer adds the label **approved**: the workflow opens two pull requests
+   and links them on the issue:
+   - in the app repository: `.github/workflows/pipeline.yml` (the caller), `docker/*.Dockerfile`
+     and their `.dockerignore`, `.hadolint.yaml`, and `.golden-path.yml` (the answers, so
+     `copier update` can bring template improvements in later as a diff);
+   - in GitOps-Repo: `apps/<app>/values.yaml`, `apps/<app>/envs/uat/values.yaml` (placeholder
+     digests until the first deploy) and `envs/uat/secrets/README.md` with the exact sealing
+     commands.
+4. The PR checklists say what is left for people: branches and GitHub Environments, the
+   `GITOPS_DEPLOY_KEY` secret, sealed secrets, database/Redis/Kafka credentials. Merge the
+   GitOps PR first, then the app PR; the first merge to `develop` deploys to UAT.
+
+What the templates produce is what logistics runs today: the same pipeline caller, the
+same Dockerfile structure (multi-stage, pinned base by digest, non-root, no package
+managers at runtime, migrations from the image), the same chart values shape.
+
+**`ONBOARDING_TOKEN`** (repository secret): how the workflow writes to other repos. Use a
+GitHub App installation token or a fine-grained token with *contents* and *pull requests*
+write on the app repositories and GitOps-Repo. Without it, **preview** works and **approved**
+stops with a message on the issue.
+
+By hand, without the form (needs [Copier](https://copier.readthedocs.io) 9.18+):
+
+```sh
+copier copy --trust --data template=app-repo   gh:DEVOPS-CANARY/golden-path ../my-app       # answers asked interactively
+copier copy --trust --data template=gitops-app gh:DEVOPS-CANARY/golden-path ../GitOps-Repo
+copier update --trust      # later, inside ../my-app: template changes since its version, as a diff
+```
+
+Every PR to this repo renders both templates for the sample apps in `templates/tests/` and
+checks the output exactly as the pipeline would (hadolint, actionlint, the chart, kubeconform).
 
 The platform pieces an app relies on, and where they live:
 

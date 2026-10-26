@@ -1,0 +1,126 @@
+# The onboarding templates, rendered by Copier (https://copier.readthedocs.io)
+# from the answers of the "Onboard an app" form, or by hand:
+#
+#   copier copy --trust --data template=app-repo   gh:DEVOPS-CANARY/golden-path <app checkout>
+#   copier copy --trust --data template=gitops-app gh:DEVOPS-CANARY/golden-path <GitOps-Repo checkout>
+#   copier update --trust        # later, inside a rendered repo: template changes as a diff
+#
+# One repository, two templates: `template` picks the folder under templates/.
+# A rendered repo keeps its answers (and the template version) in
+# .golden-path.yml, which is what `copier update` reads.
+_min_copier_version: "9.0.0"
+_templates_suffix: .jinja
+_subdirectory: "templates/{{ template }}"
+_answers_file: "{% if template == 'gitops-app' %}apps/{{ app }}/.golden-path.yml{% else %}.golden-path.yml{% endif %}"
+
+template:
+  type: str
+  help: Which template to render
+  choices:
+    app repository (pipeline caller, Dockerfiles): app-repo
+    GitOps folder (values, UAT environment): gitops-app
+  default: app-repo
+
+app:
+  type: str
+  help: Product name, lowercase (image prefix, namespaces <app>-<env>, GitOps folder apps/<app>)
+  validator: "{% if not app | regex_search('^[a-z][a-z0-9-]{0,30}$') %}lowercase letters, digits and '-' only{% endif %}"
+
+repository:
+  type: str
+  help: The app's GitHub repository, owner/name
+  validator: "{% if not repository | regex_search('^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$') %}owner/name{% endif %}"
+
+backend:
+  type: str
+  help: Backend component (folder backend/)
+  choices: [nestjs, none]
+  default: nestjs
+
+backend_port:
+  type: int
+  help: Port the backend listens on
+  default: 3001
+  when: "{{ backend != 'none' }}"
+
+backend_orm:
+  type: str
+  help: Database layer of the backend (decides what the image ships for migrations)
+  choices: [prisma, typeorm, none]
+  default: prisma
+  when: "{{ backend != 'none' }}"
+
+frontend:
+  type: str
+  help: Frontend component (folder frontend/)
+  choices: [nextjs, none]
+  default: nextjs
+
+worker:
+  type: str
+  help: Name of a background worker that runs the backend image with its own command (empty = none)
+  default: ""
+  validator: "{% if worker and not worker | regex_search('^[a-z][a-z0-9-]{0,30}$') %}lowercase letters, digits and '-' only{% endif %}"
+  when: "{{ backend != 'none' }}"
+
+worker_command:
+  type: str
+  help: The worker's command, e.g. node dist/worker.js
+  default: node dist/worker.js
+  when: "{{ worker }}"
+
+package_manager:
+  type: str
+  help: npm, or yarn (classic 1.x)
+  choices: [npm, yarn]
+  default: npm
+
+node_version:
+  type: str
+  help: Node major for the checks (the Dockerfiles pin an exact image)
+  default: "22"
+
+needs_postgres:
+  type: bool
+  help: Uses a PostgreSQL database
+  default: true
+
+needs_redis:
+  type: bool
+  help: Uses Redis (shared state across replicas, pub/sub)
+  default: false
+
+needs_kafka:
+  type: bool
+  help: Produces or consumes Kafka events
+  default: false
+
+owner:
+  type: str
+  help: Team or person responsible for the app (GitHub handle)
+  default: ""
+
+gitops_repo:
+  type: str
+  help: The GitOps repository Argo CD watches
+  default: DEVOPS-CANARY/GitOps-Repo
+
+registry:
+  type: str
+  help: Where the pipeline pushes images (lowercase)
+  default: ghcr.io/devops-canary
+
+chart_version:
+  type: str
+  help: rssb-app chart version to pin for UAT
+  default: "0.5.0"
+
+host_domain:
+  type: str
+  help: Domain the environments' hosts hang off (uat.<app>.<domain>)
+  default: local
+
+pipeline_version:
+  type: str
+  help: Major tag of the shared pipeline to call
+  default: v1

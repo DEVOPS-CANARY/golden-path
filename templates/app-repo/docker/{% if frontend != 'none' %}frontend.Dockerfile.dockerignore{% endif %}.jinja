@@ -1,0 +1,17 @@
+# Applies to builds using docker/frontend.Dockerfile (BuildKit).
+# Paths are relative to the build context: ./frontend
+# Keeps the context small and keeps secrets and tooling out of the image.
+node_modules
+.next
+out
+coverage
+test-results
+.env
+.env.*
+*.log
+.git
+.github
+.vscode
+.idea
+docs
+*.md
