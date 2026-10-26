@@ -8,10 +8,12 @@
 # Only people who can add labels (triage and above) can trigger it, and the
 # PRs are reviewed like any other: nothing runs until they are merged.
 #
-# Secret ONBOARDING_TOKEN: how this workflow writes to the other repos. A
-# GitHub App installation token or a fine-grained token with contents +
-# pull-requests write on the app repos and GitOps-Repo. Without it, "approved"
-# stops with a clear message; "preview" still works.
+# Writing to the other repos: a GitHub App ("goldenpath-bot") installed on
+# the org's repos, with Contents and Pull requests read & write. The App ID is
+# the repository variable ONBOARDING_APP_ID, its private key the secret
+# ONBOARDING_APP_KEY; each run mints a token that lives for one hour and only
+# for the two repos it touches. Without the App, "approved" stops with a
+# clear message; "preview" still works.
 name: Onboard an app
 
 on:
@@ -64,6 +66,7 @@ jobs:
             exit 1
           fi
           jq -r 'to_entries[] | "\(.key)=\(.value)"' answers.json | grep -v '^owner=' >> "$GITHUB_ENV"
+          echo "app_repo_name=$(jq -r '.repository | split("/")[1]' answers.json)" >> "$GITHUB_ENV"
 
       # Rendered from this repo's latest release tag on GitHub (Copier's default
       # for a git template), not from the checkout: the rendered repo then
@@ -97,23 +100,41 @@ jobs:
           gh issue comment "$ISSUE" --body-file preview.md
           gh issue edit "$ISSUE" --remove-label preview
 
+      - name: Check the App is configured
+        if: env.MODE == 'approved' && vars.ONBOARDING_APP_ID == ''
+        run: |
+          gh issue comment "$ISSUE" --body ":x: The onboarding GitHub App is not configured on this repository (variable \`ONBOARDING_APP_ID\`, secret \`ONBOARDING_APP_KEY\`, see README), so the pull requests cannot be opened."
+          gh issue edit "$ISSUE" --remove-label approved
+          exit 1
+
+      # A token for this run only: one hour, these two repositories.
+      - name: Mint an App token
+        if: env.MODE == 'approved'
+        id: app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.ONBOARDING_APP_ID }}
+          private-key: ${{ secrets.ONBOARDING_APP_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: |
+            ${{ env.app_repo_name }}
+            GitOps-Repo
+
       # One PR per repository, on branch onboard/golden-path. Files are copied
       # over the checkout, so re-running updates the same branch.
       - name: Open the pull requests
         if: env.MODE == 'approved'
         env:
-          ONBOARDING_TOKEN: ${{ secrets.ONBOARDING_TOKEN }}
-          GITOPS_REPO: DEVOPS-CANARY/GitOps-Repo
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+          GITOPS_REPO: ${{ github.repository_owner }}/GitOps-Repo
         run: |
-          if [ -z "$ONBOARDING_TOKEN" ]; then
-            gh issue comment "$ISSUE" --body ":x: \`ONBOARDING_TOKEN\` is not set on this repository, so the pull requests cannot be opened. Add the token (see README), then add the **approved** label again."
-            gh issue edit "$ISSUE" --remove-label approved
-            exit 1
-          fi
-          git config --global user.name "golden-path[bot]"
-          git config --global user.email "golden-path-bot@users.noreply.github.com"
-          # git pushes and `gh pr create` on the target repos use the onboarding token.
-          export GH_TOKEN="$ONBOARDING_TOKEN"
+          # Commits are authored by the App's bot user, so history shows what was automated.
+          bot_id=$(GH_TOKEN="$APP_TOKEN" gh api "/users/${APP_SLUG}[bot]" --jq .id)
+          git config --global user.name "${APP_SLUG}[bot]"
+          git config --global user.email "${bot_id}+${APP_SLUG}[bot]@users.noreply.github.com"
+          # git pushes and `gh pr create` on the target repos use the App token.
+          export GH_TOKEN="$APP_TOKEN"
           gh auth setup-git
           open_pr() { # <repo> <rendered-dir> <base-branch-preference> <title> <body-file>
             local repo=$1 src=$2 prefer=$3 title=$4 body=$5 dir base

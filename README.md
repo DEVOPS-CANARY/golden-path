@@ -6,9 +6,10 @@ declares what its app needs; this repo does the rest through reviewed pull reque
 | Part | Status |
 |---|---|
 | **Shared pipeline** (`.github/workflows/pipeline.yml`): gates, build, scan, push, deploy, promote | ✅ v1 |
-| **Onboarding**: the "Onboard an app" issue form, Copier templates for the app repo and the GitOps folder, a workflow that opens the PRs | ✅ v1.1 (PRs need `ONBOARDING_TOKEN`, see below) |
+| **Onboarding**: the "Onboard an app" issue form, Copier templates for the app repo and the GitOps folder, a workflow that opens the PRs | ✅ v1.2 |
 | Per-namespace guardrails (Kyverno): walls, quota, limits, image rule | ✅ in [GitOps-Repo](https://github.com/DEVOPS-CANARY/GitOps-Repo) `platform/policies` |
-| Versioned releases, bot identity (GitHub App), automatic updates (Renovate) | planned |
+| Bot identity: the `goldenpath-bot` GitHub App (short-lived tokens, no personal tokens) | ✅ for onboarding; deploys and releases next |
+| Versioned releases, automatic updates (Renovate) | planned |
 
 ## Onboarding an app
 
@@ -32,10 +33,13 @@ What the templates produce is what logistics runs today: the same pipeline calle
 same Dockerfile structure (multi-stage, pinned base by digest, non-root, no package
 managers at runtime, migrations from the image), the same chart values shape.
 
-**`ONBOARDING_TOKEN`** (repository secret): how the workflow writes to other repos. Use a
-GitHub App installation token or a fine-grained token with *contents* and *pull requests*
-write on the app repositories and GitOps-Repo. Without it, **preview** works and **approved**
-stops with a message on the issue.
+**The onboarding App**: the workflow writes to other repos as the GitHub App `goldenpath-bot`
+(installed on the org's repos, permissions *Contents* and *Pull requests* read & write). Its
+App ID is the repository variable `ONBOARDING_APP_ID`, its private key the secret
+`ONBOARDING_APP_KEY` (set with `gh secret set ONBOARDING_APP_KEY < key.pem`, then delete the
+file). Each run mints a token that lives one hour and only covers the two repositories it
+touches; commits are authored by `goldenpath-bot[bot]`. Without the App, **preview** works and
+**approved** stops with a message on the issue.
 
 By hand, without the form (needs [Copier](https://copier.readthedocs.io) 9.18+):
 
