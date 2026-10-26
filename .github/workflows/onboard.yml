@@ -70,10 +70,11 @@ jobs:
       # `copier update` can later move it to the next one.
       - name: Render the templates
         run: |
-          mkdir -p out/app out/gitops
-          copier copy --defaults --trust --data-file answers.json --data template=app-repo . out/app
-          copier copy --defaults --trust --data-file answers.json --data template=gitops-app . out/gitops
-          (cd out && find . -type f | sort | sed 's#^\./##') > files.txt
+          OUT="$RUNNER_TEMP/out"; echo "OUT=$OUT" >> "$GITHUB_ENV"
+          mkdir -p "$OUT/app" "$OUT/gitops"
+          copier copy --defaults --trust --data-file answers.json --data template=app-repo . "$OUT/app"
+          copier copy --defaults --trust --data-file answers.json --data template=gitops-app . "$OUT/gitops"
+          (cd "$OUT" && find . -type f | sort | sed 's#^\./##') > "$GITHUB_WORKSPACE/files.txt"
           cat files.txt
 
       - name: Post the preview
@@ -86,7 +87,7 @@ jobs:
             echo
             echo '```'; cat files.txt; echo '```'
             while read -r f; do
-              echo "<details><summary><code>$f</code></summary>"; echo; echo '```'; cat "out/$f"; echo '```'; echo "</details>"
+              echo "<details><summary><code>$f</code></summary>"; echo; echo '```'; cat "$OUT/$f"; echo '```'; echo "</details>"
             done < files.txt
           } > preview.md
           gh issue comment "$ISSUE" --body-file preview.md
@@ -149,8 +150,8 @@ jobs:
 
           Once merged, Argo CD creates namespace \`$app-uat\` (walled by policy) and waits for the first image.
           EOF
-          app_pr=$(open_pr "$repository" out/app develop "Golden path: pipeline caller and Dockerfiles for $app" app-pr.md)
-          gitops_pr=$(open_pr "$GITOPS_REPO" out/gitops main "Onboard $app: UAT environment" gitops-pr.md)
+          app_pr=$(open_pr "$repository" "$OUT/app" develop "Golden path: pipeline caller and Dockerfiles for $app" app-pr.md)
+          gitops_pr=$(open_pr "$GITOPS_REPO" "$OUT/gitops" main "Onboard $app: UAT environment" gitops-pr.md)
           export GH_TOKEN="${{ secrets.GITHUB_TOKEN }}"
           # shellcheck disable=SC2016 # backticks in the comment text are Markdown, not shell
           gh issue comment "$ISSUE" --body "$(printf ':rocket: Pull requests opened for `%s`:\n- app repository: %s\n- GitOps-Repo: %s\n\nMerge the GitOps one first, then the app one.' "$app" "$app_pr" "$gitops_pr")"

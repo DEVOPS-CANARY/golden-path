@@ -63,18 +63,20 @@ jobs:
             name=$(basename "$answers" .yml)
             app=$(awk '/^app:/ {print $2}' "$answers")
             echo "::group::$name (app $app)"
-            out="out/$name"; mkdir -p "$out/app" "$out/gitops"
+            # Rendered outside the checkout: Copier stages the template repo with
+            # `git add -A`, which must not meet the nested repo created below.
+            out="$RUNNER_TEMP/out/$name"; mkdir -p "$out/app" "$out/gitops"
             # --vcs-ref HEAD: this commit, not the latest release tag (Copier's default for a git template)
             copier copy --defaults --trust --vcs-ref HEAD --data-file "$answers" --data template=app-repo . "$out/app"
             copier copy --defaults --trust --vcs-ref HEAD --data-file "$answers" --data template=gitops-app . "$out/gitops"
             find "$out" -type f | sort
             # Dockerfiles, with the rendered .hadolint.yaml, as the pipeline lints them
             for f in "$out"/app/docker/*.Dockerfile; do
-              docker run --rm -v "$PWD/$out/app:/src" -w /src "$HADOLINT_IMAGE" hadolint "docker/$(basename "$f")"
+              docker run --rm -v "$out/app:/src" -w /src "$HADOLINT_IMAGE" hadolint "docker/$(basename "$f")"
             done
             # The caller workflow (actionlint wants a git repository around it)
             git -C "$out/app" init -q
-            docker run --rm -v "$PWD/$out/app:/repo" -w /repo "$ACTIONLINT_IMAGE" -color
+            docker run --rm -v "$out/app:/repo" -w /repo "$ACTIONLINT_IMAGE" -color
             # The GitOps values, rendered with the chart version they pin
             version=$(awk '/^  version:/ {print $2; exit}' "$out/gitops/apps/$app/envs/uat/values.yaml")
             helm template "$app" "$CHART" --version "$version" \
