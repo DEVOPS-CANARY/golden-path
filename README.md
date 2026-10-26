@@ -92,7 +92,8 @@ jobs:
       app: logistics
       components: '["backend", "frontend"]'
     secrets:
-      GITOPS_DEPLOY_KEY: ${{ secrets.GITOPS_DEPLOY_KEY }}
+      GOLDEN_PATH_APP_KEY: ${{ secrets.GOLDEN_PATH_APP_KEY }} # org secret: deploys write to GitOps as the platform's App
+      GITOPS_DEPLOY_KEY: ${{ secrets.GITOPS_DEPLOY_KEY }} # fallback until the App is configured
 ```
 
 What the app then gets:
@@ -121,7 +122,10 @@ touches the cluster.
 | `dockerfile-dir` | | `docker` | Folder holding `<component>.Dockerfile` |
 | `gitops-repo` | | `DEVOPS-CANARY/GitOps-Repo` | Where deploys are committed |
 
-Secret `GITOPS_DEPLOY_KEY`: an SSH deploy key with write access to the GitOps repo.
+Secrets: `GOLDEN_PATH_APP_KEY` (org secret, the `goldenpath-bot` App's private key; with the
+org variable `GOLDEN_PATH_APP_ID`, each deploy mints a one-hour token for the GitOps repo and
+commits as the App) or, until the App is configured, `GITOPS_DEPLOY_KEY`, an SSH deploy key
+with write access to the GitOps repo.
 
 ### What the app repo must have
 
