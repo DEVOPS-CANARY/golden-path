@@ -9,7 +9,8 @@ declares what its app needs; this repo does the rest through reviewed pull reque
 | **Onboarding**: the "Onboard an app" issue form, Copier templates for the app repo and the GitOps folder, a workflow that opens the PRs | ✅ v1.2 |
 | Per-namespace guardrails (Kyverno): walls, quota, limits, image rule | ✅ in [GitOps-Repo](https://github.com/DEVOPS-CANARY/GitOps-Repo) `platform/policies` |
 | Bot identity: the `goldenpath-bot` GitHub App (short-lived tokens, no personal tokens) | ✅ onboarding and deploys (deploy keys retired); releases next |
-| Versioned releases, automatic updates (Renovate) | planned |
+| **Versioned releases**: Conventional Commits check, release-please release PR, tag → prod, images tagged with the version | ✅ v1.4 |
+| Automatic updates (Renovate) | planned |
 
 ## Onboarding an app
 
@@ -72,8 +73,9 @@ on:
   pull_request:
     branches: [develop, staging, main]
   push:
-    branches: [develop, staging, "hotfix/**"]
-  workflow_dispatch: # on main: release to production
+    branches: [develop, staging, main, "hotfix/**"]
+    tags: ["v*"] # a release (merged release PR): staging's images go to production
+  workflow_dispatch: # on main: the same prod deploy without a version (fallback)
 
 permissions:
   contents: read
@@ -103,7 +105,14 @@ What the app then gets:
 | Push to `develop` | Gates, then the images are pushed to GHCR and **deployed to UAT** |
 | Push to `hotfix/<name>` (branched from `main`) | Gates, then deployed to the **staging environment** for testing, without going through the `staging` branch |
 | Push to `staging` (PR `develop` → `staging`) | The images UAT tested are **promoted to staging**, found by content, never rebuilt |
-| *Run workflow* on `main` (after PR `staging` → `main`) | **Prod release**: waits for approval in the `production` environment and only accepts the exact digests staging runs |
+| Push to `main` (PR `staging` → `main`) | release-please keeps a **"chore(main): release X.Y.Z" PR** up to date: the next version from the commit messages, the changelog |
+| Merging that release PR (tag `vX.Y.Z`) | **Prod release**: waits for approval in the `production` environment, ships exactly the digests staging runs (staging's commit must be in `main`'s history), and tags the images `vX.Y.Z` |
+| *Run workflow* on `main` | The same prod deploy without a version (fallback) |
+
+Commit messages follow [Conventional Commits](https://www.conventionalcommits.org) and are checked
+on every PR: `fix:` → patch, `feat:` → minor, `feat!:` or a `BREAKING CHANGE:` footer → major;
+`chore:`, `docs:`, `refactor:`… don't bump. To force a number (e.g. continue an app's existing
+numbering), add a `Release-As: 1.47.0` footer to a commit on `main`. Nobody types a tag.
 
 Deploys are GitOps commits: the pipeline writes the new image digests into
 `apps/<app>/envs/<env>/values.yaml` in GitOps-Repo, and Argo CD rolls them out. CI never
@@ -132,7 +141,7 @@ as `GITOPS_DEPLOY_KEY`.)
 - One folder per component with its `package.json`, lockfile and the scripts in `checks`.
 - `docker/<component>.Dockerfile`, built with the component folder as its context.
 - GitHub Environments `uat` (branch `develop`), `staging` (`staging`, `hotfix/*`) and
-  `production` (`main` only, **required reviewer**).
+  `production` (`main` and tags `v*`, **required reviewer**).
 - In GitOps-Repo: `apps/<app>/values.yaml` and `apps/<app>/envs/<env>/values.yaml` for each
   environment, using the `rssb-app` chart, with each component's image as
   `repository: ghcr.io/<org>/<app>-<component>` followed by a `digest:` line.
