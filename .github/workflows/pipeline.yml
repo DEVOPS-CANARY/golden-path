@@ -86,6 +86,9 @@ env:
   # Block on fixable High/Critical vulnerabilities. Accepted risks go in the
   # app's .trivyignore with a reason and an expiry, never by lowering this bar.
   TRIVY_SEVERITY: HIGH,CRITICAL
+  # Re-tags a manifest by digest without rewrapping it (buildx imagetools
+  # would create a new index, i.e. a different digest).
+  CRANE_IMAGE: gcr.io/go-containerregistry/crane:v0.22.1@sha256:1f968817b95790bed063f71175aa6b8ff879fa17064020415f3e18bb6e6a36e1
 
 jobs:
   # ----------------------------------------------------------------- plan ---
@@ -519,13 +522,16 @@ jobs:
           esac
           cat digests.txt
 
-      # A release: the images also get the version as a tag, on the same digest,
-      # so GHCR and `kubectl` both answer "which version is this?".
+      # A release: the images also get the version as a tag, on the exact same
+      # manifest (same digest), so GHCR and `kubectl` both answer "which version
+      # is this?". crane reads the registry login docker/login-action wrote.
       - name: Tag the images with the version
         if: env.VERSION != ''
         run: |
           while IFS='=' read -r component digest; do
-            docker buildx imagetools create --tag "$REGISTRY-$component:$VERSION" "$REGISTRY-$component@$digest"
+            docker run --rm -v "$HOME/.docker:/root/.docker:ro" "$CRANE_IMAGE" tag "$REGISTRY-$component@$digest" "$VERSION"
+            got=$(docker run --rm -v "$HOME/.docker:/root/.docker:ro" "$CRANE_IMAGE" digest "$REGISTRY-$component:$VERSION")
+            [ "$got" = "$digest" ] || { echo "::error::$REGISTRY-$component:$VERSION resolves to $got, not $digest"; exit 1; }
             echo "$REGISTRY-$component:$VERSION -> $digest"
           done < digests.txt
 
@@ -564,7 +570,7 @@ jobs:
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           fi
-          git commit -qam "$ENV_NAME: $APP ${VERSION:+$VERSION }$NOTE" \
+          git commit -qam "$ENV_NAME: $APP $NOTE" \
             -m "Source: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA}" \
             -m "Pipeline: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           # Another deploy (another app or environment) may have landed first:
