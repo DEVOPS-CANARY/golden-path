@@ -65,15 +65,19 @@ jobs:
           fi
           jq -r 'to_entries[] | "\(.key)=\(.value)"' answers.json | grep -v '^owner=' >> "$GITHUB_ENV"
 
-      # Rendered from this repo's latest release tag (Copier's default for a git
-      # template), so an app always gets a released template version and
-      # `copier update` can later move it to the next one.
+      # Rendered from this repo's latest release tag on GitHub (Copier's default
+      # for a git template), not from the checkout: the rendered repo then
+      # records `_src_path: gh:DEVOPS-CANARY/golden-path` and `_commit: vX.Y.Z`,
+      # which is what `copier update` needs to move it to a later release.
       - name: Render the templates
+        env:
+          TEMPLATE: gh:${{ github.repository }}
         run: |
           OUT="$RUNNER_TEMP/out"; echo "OUT=$OUT" >> "$GITHUB_ENV"
           mkdir -p "$OUT/app" "$OUT/gitops"
-          copier copy --defaults --trust --data-file answers.json --data template=app-repo . "$OUT/app"
-          copier copy --defaults --trust --data-file answers.json --data template=gitops-app . "$OUT/gitops"
+          copier copy --defaults --trust --data-file answers.json --data template=app-repo "$TEMPLATE" "$OUT/app"
+          copier copy --defaults --trust --data-file answers.json --data template=gitops-app "$TEMPLATE" "$OUT/gitops"
+          grep -hE '^(_src_path|_commit):' "$OUT/app/.golden-path.yml"
           (cd "$OUT" && find . -type f | sort | sed 's#^\./##') > "$GITHUB_WORKSPACE/files.txt"
           cat files.txt
 
