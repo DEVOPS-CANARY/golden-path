@@ -36,4 +36,5 @@ jobs:
       gitops-repo: {{ gitops_repo }}
 {%- endif %}
     secrets:
-      GITOPS_DEPLOY_KEY: ${{ '{{' }} secrets.GITOPS_DEPLOY_KEY {{ '}}' }}
+      GOLDEN_PATH_APP_KEY: ${{ '{{' }} secrets.GOLDEN_PATH_APP_KEY {{ '}}' }} # org secret: deploys write to GitOps as the platform's App
+      GITOPS_DEPLOY_KEY: ${{ '{{' }} secrets.GITOPS_DEPLOY_KEY {{ '}}' }} # fallback until the App is configured
