@@ -20,6 +20,10 @@ on:
         type: choice
         options: [info, debug]
         default: info
+      now:
+        description: Ignore the Monday schedule and open PRs now
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -53,5 +57,7 @@ jobs:
           configurationFile: .github/renovate-global.json
         env:
           LOG_LEVEL: ${{ inputs.log-level || 'info' }}
+          # `now`: a manual run that ignores the preset's schedule (the run is still bound by minimumReleaseAge).
+          RENOVATE_FORCE: ${{ inputs.now && '{"schedule":["at any time"]}' || '' }}
           # Commits and PRs come from the App's bot user.
           RENOVATE_GIT_AUTHOR: "goldenpath-bot[bot] <348176857+goldenpath-bot[bot]@users.noreply.github.com>"
