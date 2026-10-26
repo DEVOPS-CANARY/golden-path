@@ -64,8 +64,11 @@ on:
         default: DEVOPS-CANARY/GitOps-Repo
     secrets:
       GITOPS_DEPLOY_KEY:
-        description: SSH deploy key with write access to the GitOps repository
-        required: true
+        description: SSH deploy key with write access to the GitOps repository (fallback when the App below is not configured)
+        required: false
+      GOLDEN_PATH_APP_KEY:
+        description: Private key of the goldenpath-bot GitHub App (org secret); with the org variable GOLDEN_PATH_APP_ID, deploys write to GitOps as the App
+        required: false
 
 permissions:
   contents: read
@@ -94,6 +97,8 @@ jobs:
       environment: ${{ steps.plan.outputs.environment }}
       image-from: ${{ steps.plan.outputs.image-from }}
       same-as: ${{ steps.plan.outputs.same-as }}
+      gitops-owner: ${{ steps.plan.outputs.gitops-owner }}
+      gitops-name: ${{ steps.plan.outputs.gitops-name }}
     env:
       APP: ${{ inputs.app }}
       COMPONENTS: ${{ inputs.components }}
@@ -112,9 +117,13 @@ jobs:
           EVENT: ${{ github.event_name }}
           REF: ${{ github.ref }}
           OWNER: ${{ github.repository_owner }}
+          GITOPS_REPO: ${{ inputs.gitops-repo }}
         run: |
           # GHCR paths must be lowercase; the org name keeps its capitals.
           echo "registry=ghcr.io/${OWNER,,}/$APP" >> "$GITHUB_OUTPUT"
+          [[ "$GITOPS_REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || { echo "::error::gitops-repo must be owner/name, got '$GITOPS_REPO'"; exit 1; }
+          echo "gitops-owner=${GITOPS_REPO%%/*}" >> "$GITHUB_OUTPUT"
+          echo "gitops-name=${GITOPS_REPO#*/}" >> "$GITHUB_OUTPUT"
           build=true push=false deploy="" environment="" from="" same=""
           case "$EVENT:$REF" in
             push:refs/heads/develop)     push=true;  deploy=uat;     environment=uat;        from=commit ;;
@@ -352,6 +361,20 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # How this job writes to the GitOps repo: as the goldenpath-bot GitHub App
+      # when the org variable GOLDEN_PATH_APP_ID and the org secret
+      # GOLDEN_PATH_APP_KEY exist (a token for this run only, one hour, that
+      # one repository); otherwise with the per-app deploy key.
+      - name: Mint a GitOps token from the App
+        if: vars.GOLDEN_PATH_APP_ID != ''
+        id: app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.GOLDEN_PATH_APP_ID }}
+          private-key: ${{ secrets.GOLDEN_PATH_APP_KEY }}
+          owner: ${{ needs.plan.outputs.gitops-owner }}
+          repositories: ${{ needs.plan.outputs.gitops-name }}
+
       # Pin by digest, not tag: a tag can be moved, a digest is the exact bytes
       # that were scanned. Written as "component=digest" lines for later steps.
       - name: Resolve image digests
@@ -375,7 +398,17 @@ jobs:
           cat digests.txt
           echo "note=${GITHUB_REF_NAME}@${GITHUB_SHA::7} tree-${tree::8}" >> "$GITHUB_OUTPUT"
 
-      - name: Check out the GitOps repo
+      - name: Check out the GitOps repo (as the App)
+        if: steps.app-token.outputs.token != ''
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ inputs.gitops-repo }}
+          token: ${{ steps.app-token.outputs.token }}
+          path: gitops
+          persist-credentials: true # needed to push the deploy commit
+
+      - name: Check out the GitOps repo (deploy key)
+        if: steps.app-token.outputs.token == ''
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ inputs.gitops-repo }}
@@ -405,6 +438,8 @@ jobs:
         working-directory: gitops
         env:
           NOTE: ${{ steps.digests.outputs.note }}
+          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           file="apps/$APP/envs/$ENV_NAME/values.yaml"
           [ -f "$file" ] || { echo "::error::$file not found in $GITOPS_REPO: onboard the app's $ENV_NAME environment first"; exit 1; }
@@ -426,8 +461,14 @@ jobs:
             echo "$ENV_NAME already runs these digests; nothing to commit." | tee -a "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if [ -n "$APP_SLUG" ]; then # authored by the App's bot user
+            bot_id=$(GH_TOKEN="$APP_TOKEN" gh api "/users/${APP_SLUG}[bot]" --jq .id)
+            git config user.name "${APP_SLUG}[bot]"
+            git config user.email "${bot_id}+${APP_SLUG}[bot]@users.noreply.github.com"
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          fi
           git commit -qam "$ENV_NAME: $APP $NOTE" \
             -m "Source: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA}" \
             -m "Pipeline: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
