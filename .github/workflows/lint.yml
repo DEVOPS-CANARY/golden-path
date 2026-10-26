@@ -1,6 +1,12 @@
-# Checks this repo's own workflows and templates on every PR: actionlint
-# (workflow syntax, expressions, pinned actions' inputs) with shellcheck for
-# every `run:` script. A typo here would break every app's pipeline.
+# Checks this repo on every PR. A typo here would break every app's pipeline
+# or every new app's first day, so:
+#   actionlint   workflow syntax, expressions, pinned actions' inputs, with
+#                shellcheck for every `run:` script
+#   templates    both templates rendered for sample apps (templates/tests),
+#                then the output checked the way the pipeline would: hadolint
+#                on the Dockerfiles, actionlint on the caller, the GitOps
+#                values rendered with the rssb-app chart and validated against
+#                the API schemas
 name: Lint
 
 on:
@@ -11,6 +17,15 @@ on:
 permissions:
   contents: read
 
+env:
+  ACTIONLINT_IMAGE: rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
+  HADOLINT_IMAGE: hadolint/hadolint:v2.15.1-alpine@sha256:a1d49ae1a4e83c1dbad26b8c1ad7588c8bd1e04f4866b34ad3cac50335198552
+  KUBECONFORM_IMAGE: ghcr.io/yannh/kubeconform:v0.8.0
+  HELM_VERSION: v4.2.1 # same Helm as Argo CD renders with
+  COPIER_VERSION: "9.18.1"
+  CRD_SCHEMAS: https://raw.githubusercontent.com/datreeio/CRDs-catalog/501527ab9c40c827144c8f45945b25a023e344ce
+  CHART: oci://ghcr.io/devops-canary/charts/rssb-app
+
 jobs:
   actionlint:
     name: actionlint + shellcheck
@@ -19,7 +34,61 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - run: >
-          docker run --rm -v "$PWD:/repo" -w /repo
-          rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
-          -color
+      - run: docker run --rm -v "$PWD:/repo" -w /repo "$ACTIONLINT_IMAGE" -color
+
+  templates:
+    name: Render and check the templates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - name: Install Copier and Helm (Helm checksum verified)
+        run: |
+          set -euo pipefail
+          pip install --quiet --disable-pip-version-check "copier==$COPIER_VERSION"
+          cd "$(mktemp -d)"
+          curl -fsSLO "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz"
+          curl -fsSLO "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz.sha256sum"
+          sha256sum -c "helm-${HELM_VERSION}-linux-amd64.tar.gz.sha256sum"
+          tar -xzf "helm-${HELM_VERSION}-linux-amd64.tar.gz"
+          sudo install -m 0755 linux-amd64/helm /usr/local/bin/helm
+      - name: Render every sample and check the output
+        run: |
+          set -euo pipefail
+          for answers in templates/tests/*.yml; do
+            name=$(basename "$answers" .yml)
+            app=$(awk '/^app:/ {print $2}' "$answers")
+            echo "::group::$name (app $app)"
+            out="out/$name"; mkdir -p "$out/app" "$out/gitops"
+            # --vcs-ref HEAD: this commit, not the latest release tag (Copier's default for a git template)
+            copier copy --defaults --trust --vcs-ref HEAD --data-file "$answers" --data template=app-repo . "$out/app"
+            copier copy --defaults --trust --vcs-ref HEAD --data-file "$answers" --data template=gitops-app . "$out/gitops"
+            find "$out" -type f | sort
+            # Dockerfiles, with the rendered .hadolint.yaml, as the pipeline lints them
+            for f in "$out"/app/docker/*.Dockerfile; do
+              docker run --rm -v "$PWD/$out/app:/src" -w /src "$HADOLINT_IMAGE" hadolint "docker/$(basename "$f")"
+            done
+            # The caller workflow (actionlint wants a git repository around it)
+            git -C "$out/app" init -q
+            docker run --rm -v "$PWD/$out/app:/repo" -w /repo "$ACTIONLINT_IMAGE" -color
+            # The GitOps values, rendered with the chart version they pin
+            version=$(awk '/^  version:/ {print $2; exit}' "$out/gitops/apps/$app/envs/uat/values.yaml")
+            helm template "$app" "$CHART" --version "$version" \
+              -f "$out/gitops/apps/$app/values.yaml" -f "$out/gitops/apps/$app/envs/uat/values.yaml" \
+              | sed -n '/^---/,$p' \
+              | docker run --rm -i "$KUBECONFORM_IMAGE" -strict -summary -schema-location default \
+                  -schema-location "$CRD_SCHEMAS/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json"
+            echo "::endgroup::"
+          done
+      - name: The form parser
+        run: |
+          set -euo pipefail
+          python scripts/onboarding_answers.py templates/tests/issue-body.md > /tmp/answers.json
+          python -c "import json; a=json.load(open('/tmp/answers.json')); assert a['app']=='sample' and a['needs_redis'] and not a['needs_kafka'], a"
+          sed 's/^sample$/Sample App/' templates/tests/issue-body.md > /tmp/bad.md
+          if python scripts/onboarding_answers.py /tmp/bad.md 2>/dev/null; then echo "::error::an invalid app name was accepted"; exit 1; fi
+          echo "parser: valid form accepted, invalid name refused"

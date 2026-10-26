@@ -1,0 +1,56 @@
+# {{ app }}: what is the same in every environment (rssb-app chart). Each
+# environment's envs/<env>/values.yaml adds only what differs there: the chart
+# version, the host, image digests (written by CI) and per-environment settings.
+# Rendered by the platform's golden path (https://github.com/{{ repository }}).
+
+components:
+{%- if backend != 'none' %}
+  backend:
+    type: nestjs
+    port: {{ backend_port }}
+    secretRefs: [backend-secrets] # DATABASE_URL, JWT_SECRET, ... (sealed per environment)
+    ingress: { enabled: true, path: /api, stripPrefix: true } # /api/users reaches the app as /users
+    env:
+      NODE_ENV: production
+{%- if needs_kafka %}
+      KAFKA_BROKERS: host.minikube.internal:19092 # LAB: Kafka in Docker next to the cluster
+{%- endif %}
+{%- if backend_orm == 'prisma' %}
+    migration:
+      enabled: true # run by Argo CD before the new pods roll out
+      command: [node, node_modules/prisma/build/index.js, migrate, deploy]
+{%- elif backend_orm == 'typeorm' %}
+    migration:
+      enabled: true # run by Argo CD before the new pods roll out
+      command: [node, node_modules/typeorm/cli.js, migration:run, -d, dist/data-source.js]
+{%- endif %}
+{%- endif %}
+{%- if frontend != 'none' %}
+
+  frontend:
+    type: nextjs
+    port: 3000
+    # Exposed on "/" by the nextjs type defaults.
+{%- endif %}
+{%- if worker %}
+
+  # Background worker: the backend image with its own entry point, no port,
+  # no route. Scaled on its Kafka lag by KEDA (autoscaling below).
+  {{ worker }}:
+    type: worker
+    command: [{% for part in worker_command.split() %}{{ part }}{% if not loop.last %}, {% endif %}{% endfor %}]
+    secretRefs: [{{ worker }}-secrets] # only what the worker needs (least privilege)
+    env:
+      NODE_ENV: production
+{%- if needs_kafka %}
+      KAFKA_BROKERS: host.minikube.internal:19092 # LAB
+    autoscaling:
+      enabled: true
+      metric: kafka
+      minReplicas: 1
+      maxReplicas: 6 # never more than the topic's partitions
+      kafka:
+        offsetResetPolicy: earliest
+        # topic and consumerGroup: per environment (envs/<env>/values.yaml)
+{%- endif %}
+{%- endif %}

@@ -1,0 +1,14 @@
+# CI render test: every option on (a worker, Redis, Kafka), Yarn + TypeORM.
+app: sample
+repository: DEVOPS-CANARY/sample-app
+backend: nestjs
+backend_port: 3001
+backend_orm: typeorm
+frontend: nextjs
+worker: notifier
+worker_command: node dist/worker.js
+package_manager: yarn
+needs_postgres: true
+needs_redis: true
+needs_kafka: true
+owner: platform-team

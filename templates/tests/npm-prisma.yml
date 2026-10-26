@@ -1,0 +1,13 @@
+# CI render test: backend only, npm + Prisma, nothing optional.
+app: shop
+repository: DEVOPS-CANARY/shop
+backend: nestjs
+backend_port: 4000
+backend_orm: prisma
+frontend: none
+worker: ""
+package_manager: npm
+needs_postgres: true
+needs_redis: false
+needs_kafka: false
+owner: platform-team
