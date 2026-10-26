@@ -20,6 +20,16 @@
   "rangeStrategy": "pin",
   "packageRules": [
     {
+      "description": "setup-python's major.minor stays as written; the patch is picked by the runner",
+      "matchManagers": [
+        "github-actions"
+      ],
+      "matchDepNames": [
+        "python"
+      ],
+      "enabled": false
+    },
+    {
       "description": "Security fixes may come at any time and need no waiting period",
       "matchDatasources": [
         "npm"
@@ -123,5 +133,6 @@
       "packageNameTemplate": "{{registry}}/{{depName}}",
       "versioningTemplate": "semver"
     }
-  ]
+  ],
+  "minimumReleaseAgeBehaviour": "timestamp-optional"
 }
