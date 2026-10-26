@@ -1,0 +1,78 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "description": "Shared Renovate preset for the platform and its apps: extends: [\"github>DEVOPS-CANARY/golden-path\"]",
+  "extends": [
+    "config:recommended",
+    "helpers:pinGitHubActionDigests",
+    "docker:pinDigests",
+    ":semanticCommits",
+    ":prConcurrentLimit10"
+  ],
+  "labels": ["dependencies"],
+  "timezone": "Africa/Kigali",
+  "schedule": ["before 7am on monday"],
+  "minimumReleaseAge": "14 days",
+  "prHourlyLimit": 0,
+  "rangeStrategy": "pin",
+  "packageRules": [
+    {
+      "description": "Security fixes may come at any time and need no waiting period",
+      "matchDatasources": ["npm"],
+      "isVulnerabilityAlert": true,
+      "schedule": ["at any time"],
+      "minimumReleaseAge": null,
+      "labels": ["dependencies", "security"]
+    },
+    {
+      "description": "Minor and patch updates of GitHub Actions in one PR",
+      "matchManagers": ["github-actions"],
+      "matchUpdateTypes": ["minor", "patch", "digest"],
+      "groupName": "GitHub Actions"
+    },
+    {
+      "description": "Scanner images (Gitleaks, Semgrep, Trivy, hadolint, actionlint, kubeconform, crane) in one PR",
+      "matchDatasources": ["docker"],
+      "matchFileNames": [".github/workflows/**"],
+      "matchUpdateTypes": ["minor", "patch", "digest"],
+      "groupName": "scanner images"
+    },
+    {
+      "description": "Node base image: digest and patch updates together",
+      "matchDatasources": ["docker"],
+      "matchDepNames": ["node"],
+      "matchUpdateTypes": ["patch", "digest"],
+      "groupName": "node base image"
+    },
+    {
+      "description": "Platform charts (Traefik, KEDA, Kyverno) one PR each, never auto-merged",
+      "matchFileNames": ["bootstrap/argo-config/**"],
+      "labels": ["dependencies", "platform-chart"]
+    }
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Container images pinned as tag@digest in workflow env blocks, e.g. TRIVY_IMAGE: aquasec/trivy:0.75.0@sha256:...",
+      "managerFilePatterns": ["/^\\.github/workflows/.+\\.ya?ml$/"],
+      "matchStrings": ["\\b[A-Z_]+_IMAGE: (?<depName>[a-z0-9./-]+):(?<currentValue>[A-Za-z0-9._-]+)@(?<currentDigest>sha256:[a-f0-9]{64})"],
+      "datasourceTemplate": "docker"
+    },
+    {
+      "customType": "regex",
+      "description": "Charts Argo CD takes from a Git repository at a release tag (KEDA, Traefik)",
+      "managerFilePatterns": ["/^bootstrap/argo-config/.+\\.ya?ml$/"],
+      "matchStrings": ["repoURL: https://github\\.com/(?<depName>[^/\\s]+/[^/\\s.]+)(\\.git)?\\s+(?:path: \\S+\\s+)?targetRevision: (?<currentValue>v?[0-9][0-9.]+)"],
+      "datasourceTemplate": "github-tags",
+      "versioningTemplate": "semver-coerced"
+    },
+    {
+      "customType": "regex",
+      "description": "Charts Argo CD takes from an OCI registry (Kyverno)",
+      "managerFilePatterns": ["/^bootstrap/argo-config/.+\\.ya?ml$/"],
+      "matchStrings": ["repoURL: (?<registryUrl>ghcr\\.io/[^\\s]+)\\s+chart: (?<depName>[a-z0-9-]+)\\s+targetRevision: (?<currentValue>[0-9][0-9.]+)"],
+      "datasourceTemplate": "docker",
+      "packageNameTemplate": "{{registryUrl}}/{{depName}}",
+      "versioningTemplate": "semver"
+    }
+  ]
+}

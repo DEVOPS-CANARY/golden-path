@@ -1,0 +1,57 @@
+# Automatic dependency updates for every platform and app repository, as
+# pull requests: pinned GitHub Actions (SHA + version comment), scanner and
+# base images (tag + digest), the charts Argo CD pins, npm packages.
+#
+# Self-hosted: Renovate runs here on a schedule, authenticated as the
+# platform's GitHub App, and visits the repositories listed in
+# .github/renovate-global.json. Each repository's renovate.json says
+# `extends: ["github>DEVOPS-CANARY/golden-path"]`, which is the shared preset
+# default.json in this repo: one place to decide how updates are grouped,
+# scheduled and labelled.
+name: Renovate
+
+on:
+  schedule:
+    - cron: "17 4 * * 1-5" # 04:17 UTC on weekdays
+  workflow_dispatch:
+    inputs:
+      log-level:
+        description: Renovate log level
+        type: choice
+        options: [info, debug]
+        default: info
+
+permissions:
+  contents: read
+
+concurrency:
+  group: renovate
+  cancel-in-progress: false
+
+jobs:
+  renovate:
+    name: Renovate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # One-hour token for every repository the App is installed on in the org.
+      - name: Mint an App token
+        id: app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.GOLDEN_PATH_APP_ID }}
+          private-key: ${{ secrets.GOLDEN_PATH_APP_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - uses: renovatebot/github-action@f0f41e5f2e706165f6814b1d0f0d0e319de7d1d9 # v46.3.8
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          renovate-version: 44.155.1
+          configurationFile: .github/renovate-global.json
+        env:
+          LOG_LEVEL: ${{ inputs.log-level || 'info' }}
+          # Commits and PRs come from the App's bot user.
+          RENOVATE_GIT_AUTHOR: "goldenpath-bot[bot] <348176857+goldenpath-bot[bot]@users.noreply.github.com>"
