@@ -10,7 +10,7 @@ declares what its app needs; this repo does the rest through reviewed pull reque
 | Per-namespace guardrails (Kyverno): walls, quota, limits, image rule | ✅ in [GitOps-Repo](https://github.com/DEVOPS-CANARY/GitOps-Repo) `platform/policies` |
 | Bot identity: the `goldenpath-bot` GitHub App (short-lived tokens, no personal tokens) | ✅ onboarding and deploys (deploy keys retired); releases next |
 | **Versioned releases**: Conventional Commits check, release-please release PR, tag → prod, images tagged with the version | ✅ v1.4 |
-| Automatic updates (Renovate) | planned |
+| **Automatic updates**: Renovate runs here as the App on weekdays and opens PRs in every listed repo (actions, images, charts, npm); each repo extends the shared preset `default.json` | ✅ v1.5 |
 
 ## Onboarding an app
 
@@ -160,6 +160,18 @@ To release: merge to `main`, then
 ```sh
 git tag -a v1.2.3 -m "..." && git tag -f v1 v1.2.3 && git push origin v1.2.3 && git push -f origin v1
 ```
+
+## Dependency updates (Renovate)
+
+`.github/workflows/renovate.yml` runs Renovate on weekdays as the `goldenpath-bot` App over the
+repositories in `.github/renovate-global.json`. Each of them keeps a two-line `renovate.json`
+that extends the shared preset [`default.json`](default.json) in this repo, so the rules live in
+one place: pinned GitHub Actions and container images move by digest + version, the charts Argo
+CD pins (Traefik, KEDA, Kyverno) get one PR each, minor/patch updates are grouped, every update
+waits **14 days** after its release (our supply-chain rule), and security fixes skip the wait.
+PRs are opened before 7am Kigali on Mondays; nothing is merged automatically.
+Run it by hand: Actions → Renovate → Run workflow (log level `debug` to see why something is
+or isn't proposed).
 
 ## Rules for this repo
 

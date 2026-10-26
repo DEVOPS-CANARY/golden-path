@@ -1,0 +1,13 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "platform": "github",
+  "repositories": [
+    "DEVOPS-CANARY/golden-path",
+    "DEVOPS-CANARY/GitOps-Repo",
+    "DEVOPS-CANARY/helm-charts",
+    "DEVOPS-CANARY/smart-logistics-app"
+  ],
+  "onboarding": false,
+  "requireConfig": "required",
+  "persistRepoData": false
+}
