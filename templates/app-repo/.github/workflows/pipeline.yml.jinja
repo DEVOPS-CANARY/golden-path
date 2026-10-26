@@ -7,8 +7,9 @@ on:
   pull_request:
     branches: [develop, staging, main]
   push:
-    branches: [develop, staging, "hotfix/**"]
-  workflow_dispatch: # on main: release to production
+    branches: [develop, staging, main, "hotfix/**"]
+    tags: ["v*"] # a release (merged release PR): staging's images go to production
+  workflow_dispatch: # on main: the same prod deploy without a version (fallback)
 
 permissions:
   contents: read

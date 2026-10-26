@@ -168,7 +168,8 @@ jobs:
 
           Adds the shared pipeline caller and the Dockerfiles for **$app**. Before merging:
           - [ ] Branches \`develop\`, \`staging\`, \`main\` exist; hotfixes go on \`hotfix/<name>\`
-          - [ ] GitHub Environments \`uat\` (develop), \`staging\` (staging, hotfix/*), \`production\` (main, required reviewer)
+          - [ ] GitHub Environments \`uat\` (develop), \`staging\` (staging, hotfix/*), \`production\` (main and tags v*, required reviewer)
+          - [ ] Commit messages follow Conventional Commits (feat:, fix:, ...): they decide the version numbers
           - [ ] Each component folder has the scripts the pipeline runs: \`format:check lint typecheck test build\`
           - [ ] The GitOps PR is merged first (the first deploy needs the environment to exist)
 

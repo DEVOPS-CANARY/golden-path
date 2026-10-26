@@ -5,17 +5,22 @@
 #   push to develop        build -> Trivy image -> push to GHCR -> deploy to UAT
 #   push to hotfix/<name>  same, but deployed to the staging environment
 #   push to staging        promote the UAT images (never rebuilt) to staging
-#   run by hand on main    promote staging's images to prod, after approval
+#   push to main           release-please keeps a "release X.Y.Z" PR up to date
+#   tag vX.Y.Z             (merging that PR) ship staging's images to prod, after
+#                          approval; the images get the version tag too
+#   run by hand on main    the same prod release without a version (fallback)
 #
 # Deploys are GitOps commits: CI never touches the cluster. Argo CD (inside
 # the cluster) sees the new image digests and rolls them out.
 #
 # Conventions the app must follow (the onboarding template sets them up):
-#   - branches develop, staging, main, hotfix/<name>
+#   - branches develop, staging, main, hotfix/<name>; commit messages follow
+#     Conventional Commits (feat:, fix:, ...), checked on every PR; that is
+#     what decides the next version number
 #   - one folder per component (backend/, frontend/, ...) with package.json
 #   - docker/<component>.Dockerfile, built with the component folder as context
-#   - GitHub Environments uat, staging, production (production: main only,
-#     with a required reviewer) and the secret GITOPS_DEPLOY_KEY
+#   - GitHub Environments uat, staging, production (production: main and
+#     tags v*, with a required reviewer)
 #   - a GitOps folder apps/<app>/envs/<env>/values.yaml (rssb-app chart) whose
 #     images are ghcr.io/<org>/<app>-<component>
 #
@@ -96,7 +101,8 @@ jobs:
       deploy: ${{ steps.plan.outputs.deploy }}
       environment: ${{ steps.plan.outputs.environment }}
       image-from: ${{ steps.plan.outputs.image-from }}
-      same-as: ${{ steps.plan.outputs.same-as }}
+      release: ${{ steps.plan.outputs.release }}
+      version: ${{ steps.plan.outputs.version }}
       gitops-owner: ${{ steps.plan.outputs.gitops-owner }}
       gitops-name: ${{ steps.plan.outputs.gitops-name }}
     env:
@@ -124,21 +130,51 @@ jobs:
           [[ "$GITOPS_REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || { echo "::error::gitops-repo must be owner/name, got '$GITOPS_REPO'"; exit 1; }
           echo "gitops-owner=${GITOPS_REPO%%/*}" >> "$GITHUB_OUTPUT"
           echo "gitops-name=${GITOPS_REPO#*/}" >> "$GITHUB_OUTPUT"
-          build=true push=false deploy="" environment="" from="" same=""
+          build=true push=false deploy="" environment="" from="" release=false version=""
           case "$EVENT:$REF" in
             push:refs/heads/develop)     push=true;  deploy=uat;     environment=uat;        from=commit ;;
             push:refs/heads/hotfix/*)    push=true;  deploy=staging; environment=staging;    from=commit ;;
             push:refs/heads/staging)     build=false; deploy=staging; environment=staging;   from=content ;;
+            push:refs/heads/main)        build=false; release=true ;; # release-please updates the release PR
+            push:refs/tags/v[0-9]*)      build=false; deploy=prod;    environment=production; from=staging; version=${REF#refs/tags/} ;;
             workflow_dispatch:refs/heads/main)
-                                         build=false; deploy=prod;    environment=production; from=content; same=staging ;;
+                                         build=false; deploy=prod;    environment=production; from=staging ;;
             pull_request:*|workflow_dispatch:*) ;; # gates and build only, nothing pushed
             *) echo "::warning::Nothing to deploy for $EVENT on $REF; running the gates only" ;;
           esac
           {
             echo "build=$build"; echo "push=$push"; echo "deploy=$deploy"
-            echo "environment=$environment"; echo "image-from=$from"; echo "same-as=$same"
+            echo "environment=$environment"; echo "image-from=$from"
+            echo "release=$release"; echo "version=$version"
           } >> "$GITHUB_OUTPUT"
-          echo "build=$build push=$push deploy=${deploy:-none}"
+          echo "build=$build push=$push deploy=${deploy:-none} release=$release version=${version:-none}"
+
+  # Commit messages decide the next version (Conventional Commits), so a PR
+  # with a message that doesn't follow the format is refused here, not found
+  # out at release time. Merge commits are not checked; "Revert ..." is fine.
+  commits:
+    name: Commit messages (Conventional Commits)
+    needs: plan
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          pattern='^((feat|fix|perf|refactor|docs|test|build|ci|chore|style|revert)(\([^)]+\))?!?: .+|Revert .+)$'
+          bad=0
+          while IFS= read -r subject; do
+            if [[ "$subject" =~ $pattern ]]; then echo "ok   $subject"; else echo "::error::not Conventional Commits: '$subject'"; bad=1; fi
+          done < <(git log --no-merges --format=%s "$BASE..$HEAD")
+          if [ "$bad" = 1 ]; then
+            echo "::error::Commit messages must look like 'feat: add X', 'fix(api): handle Y', 'feat!: breaking change' (types: feat fix perf refactor docs test build ci chore style revert). They decide the next version and the changelog."
+            exit 1
+          fi
 
   # ---------------------------------------------------------------- gates ---
   secrets:
@@ -245,7 +281,13 @@ jobs:
   # ---------------------------------------------------------------- image ---
   image:
     name: Image (${{ matrix.component }})
-    needs: [plan, secrets, sast, dependencies, dockerfile-lint, test]
+    needs: [plan, commits, secrets, sast, dependencies, dockerfile-lint, test]
+    # commits is skipped on pushes: that is fine, a failed gate is not.
+    if: >-
+      !cancelled() && needs.plan.outputs.build == 'true' &&
+      needs.secrets.result == 'success' && needs.sast.result == 'success' &&
+      needs.dependencies.result == 'success' && needs.dockerfile-lint.result == 'success' &&
+      needs.test.result == 'success' && needs.commits.result != 'failure'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -318,12 +360,44 @@ jobs:
             echo "- digest: \`$digest\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
+  # -------------------------------------------------------------- release ---
+  # On every push to main, release-please reads the commits since the last
+  # tag, works out the next version (feat = minor, fix = patch, ! = major)
+  # and keeps one "chore(main): release X.Y.Z" PR up to date with the
+  # changelog. Merging that PR creates the tag vX.Y.Z and the GitHub Release;
+  # the tag push then runs the prod deploy below. Done as the App, because
+  # tags created with GITHUB_TOKEN would not trigger any workflow.
+  release:
+    name: Release PR (release-please)
+    needs: plan
+    if: needs.plan.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: release-${{ github.repository }}
+      cancel-in-progress: false
+    steps:
+      - name: Mint an App token for this repository
+        id: app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.GOLDEN_PATH_APP_ID }}
+          private-key: ${{ secrets.GOLDEN_PATH_APP_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+      - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          release-type: simple # version.txt + CHANGELOG.md; the app's own files stay untouched
+          target-branch: main
+
   # --------------------------------------------------------------- deploy ---
-  # One deploy job for every environment. Which images: the ones tagged for
-  # this run's commit (image-from: commit) or the ones built from exactly this
-  # content (image-from: content). A merge into staging or main has the same
-  # content (git tree) as what develop built, so it finds those images by
-  # their tree- tag instead of rebuilding them.
+  # One deploy job for every environment. Which images:
+  #   commit    the ones tagged for this run's commit (develop, hotfix builds)
+  #   content   the ones built from exactly this content: a merge into staging
+  #             has the same git tree as what develop built, so the tree- tag
+  #             finds them without rebuilding
+  #   staging   prod: exactly the digests staging runs now (its values file),
+  #             and staging's commit must be in this release's history
   deploy:
     name: Deploy to ${{ needs.plan.outputs.deploy }} (GitOps commit)
     needs: [plan, image]
@@ -338,7 +412,7 @@ jobs:
     environment: ${{ needs.plan.outputs.environment }}
     permissions:
       contents: read
-      packages: read # resolve image digests in GHCR
+      packages: write # resolve image digests; add the version tag to released images
     concurrency:
       group: gitops-${{ inputs.app }}-${{ needs.plan.outputs.deploy }}
       cancel-in-progress: false # every deploy commit lands, in order
@@ -349,10 +423,11 @@ jobs:
       GITOPS_REPO: ${{ inputs.gitops-repo }}
       ENV_NAME: ${{ needs.plan.outputs.deploy }}
       IMAGE_FROM: ${{ needs.plan.outputs.image-from }}
-      SAME_AS: ${{ needs.plan.outputs.same-as }}
+      VERSION: ${{ needs.plan.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0 # prod checks that staging's commit is an ancestor
           persist-credentials: false
 
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
@@ -375,29 +450,6 @@ jobs:
           owner: ${{ needs.plan.outputs.gitops-owner }}
           repositories: ${{ needs.plan.outputs.gitops-name }}
 
-      # Pin by digest, not tag: a tag can be moved, a digest is the exact bytes
-      # that were scanned. Written as "component=digest" lines for later steps.
-      - name: Resolve image digests
-        id: digests
-        run: |
-          tree=$(git rev-parse 'HEAD^{tree}')
-          case "$IMAGE_FROM" in
-            commit)  tag="sha-$GITHUB_SHA" ;;
-            content) tag="tree-$tree" ;;
-            *) echo "::error::image-from must be 'commit' or 'content', not '$IMAGE_FROM'"; exit 1 ;;
-          esac
-          : > digests.txt
-          for component in $(jq -r '.[]' <<<"$COMPONENTS"); do
-            ref="$REGISTRY-$component:$tag"
-            if ! d=$(docker buildx imagetools inspect "$ref" --format '{{json .Manifest.Digest}}' 2>/dev/null | tr -d '"') || [ -z "$d" ]; then
-              echo "::error::No image $ref. Only content that develop built (and deployed to UAT) can be promoted: merge develop into this branch without other changes, or ship the change through develop first."
-              exit 1
-            fi
-            echo "$component=$d" >> digests.txt
-          done
-          cat digests.txt
-          echo "note=${GITHUB_REF_NAME}@${GITHUB_SHA::7} tree-${tree::8}" >> "$GITHUB_OUTPUT"
-
       - name: Check out the GitOps repo (as the App)
         if: steps.app-token.outputs.token != ''
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -416,23 +468,61 @@ jobs:
           path: gitops
           persist-credentials: true # needed to push the deploy commit
 
-      # Prod gets only what staging runs, so nothing reaches prod untested there.
-      - name: Check the digests match ${{ needs.plan.outputs.same-as }}
-        if: needs.plan.outputs.same-as != ''
+      # Pin by digest, not tag: a tag can be moved, a digest is the exact bytes
+      # that were scanned. Written as "component=digest" lines for later steps.
+      - name: Resolve image digests
+        id: digests
         run: |
-          file="gitops/apps/$APP/envs/$SAME_AS/values.yaml"
-          [ -f "$file" ] || { echo "::error::$file not found: $SAME_AS has never been deployed"; exit 1; }
-          while IFS='=' read -r component want; do
-            image="$REGISTRY-$component"
-            # Several components can use one image (a backend and its worker), so
-            # take the distinct digests: they must all be this one.
-            runs=$(grep -A1 -E "^ +repository: ${image//./\\.}$" "$file" | grep -oE 'sha256:[0-9a-f]{64}' | sort -u || true)
-            if [ "$runs" != "$want" ]; then
-              echo "::error::$SAME_AS runs $component ${runs:-<none>}, this release is $want. Merge the same content to $SAME_AS first and let it deploy there."
-              exit 1
-            fi
+          tree=$(git rev-parse 'HEAD^{tree}')
+          : > digests.txt
+          case "$IMAGE_FROM" in
+            commit|content)
+              [ "$IMAGE_FROM" = commit ] && tag="sha-$GITHUB_SHA" || tag="tree-$tree"
+              for component in $(jq -r '.[]' <<<"$COMPONENTS"); do
+                ref="$REGISTRY-$component:$tag"
+                if ! d=$(docker buildx imagetools inspect "$ref" --format '{{json .Manifest.Digest}}' 2>/dev/null | tr -d '"') || [ -z "$d" ]; then
+                  echo "::error::No image $ref. Only content that develop built (and deployed to UAT) can be promoted: merge develop into this branch without other changes, or ship the change through develop first."
+                  exit 1
+                fi
+                echo "$component=$d" >> digests.txt
+              done
+              echo "note=${GITHUB_REF_NAME}@${GITHUB_SHA::7} tree-${tree::8}" >> "$GITHUB_OUTPUT"
+              ;;
+            staging)
+              # Prod ships exactly what staging runs, so nothing reaches prod untested
+              # there. The note on each digest line says which commit staging deployed;
+              # it must be part of this release's history.
+              file="gitops/apps/$APP/envs/staging/values.yaml"
+              [ -f "$file" ] || { echo "::error::$file not found: staging has never been deployed"; exit 1; }
+              for component in $(jq -r '.[]' <<<"$COMPONENTS"); do
+                image="$REGISTRY-$component"
+                lines=$(grep -A1 -E "^ +repository: ${image//./\\.}$" "$file" | grep -E '^ +digest:' || true)
+                d=$(grep -oE 'sha256:[0-9a-f]{64}' <<<"$lines" | sort -u)
+                [ "$(wc -l <<<"$d")" = 1 ] && [ -n "$d" ] || { echo "::error::staging has no single digest for $image in $file"; exit 1; }
+                echo "$component=$d" >> digests.txt
+                from=$(grep -oE 'staging@[0-9a-f]{7,40}' <<<"$lines" | head -1 | cut -d@ -f2)
+                if [ -z "$from" ]; then
+                  echo "::warning::$image: staging's digest line has no 'staging@<commit>' note; ancestry not checked"
+                elif ! git merge-base --is-ancestor "$from" HEAD 2>/dev/null; then
+                  echo "::error::staging runs $image from commit $from, which is not in this release's history. Merge staging into main first."
+                  exit 1
+                fi
+              done
+              echo "note=${GITHUB_REF_NAME}@${GITHUB_SHA::7} from staging" >> "$GITHUB_OUTPUT"
+              ;;
+            *) echo "::error::image-from must be commit, content or staging, not '$IMAGE_FROM'"; exit 1 ;;
+          esac
+          cat digests.txt
+
+      # A release: the images also get the version as a tag, on the same digest,
+      # so GHCR and `kubectl` both answer "which version is this?".
+      - name: Tag the images with the version
+        if: env.VERSION != ''
+        run: |
+          while IFS='=' read -r component digest; do
+            docker buildx imagetools create --tag "$REGISTRY-$component:$VERSION" "$REGISTRY-$component@$digest"
+            echo "$REGISTRY-$component:$VERSION -> $digest"
           done < digests.txt
-          echo "$SAME_AS runs the same digests."
 
       - name: Commit the new digests
         working-directory: gitops
@@ -469,7 +559,7 @@ jobs:
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           fi
-          git commit -qam "$ENV_NAME: $APP $NOTE" \
+          git commit -qam "$ENV_NAME: $APP ${VERSION:+$VERSION }$NOTE" \
             -m "Source: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA}" \
             -m "Pipeline: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           # Another deploy (another app or environment) may have landed first:
