@@ -111,6 +111,7 @@ jobs:
       - name: Mint an App token
         if: env.MODE == 'approved'
         id: app-token
+        continue-on-error: true # explained on the issue by the next step
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           app-id: ${{ vars.ONBOARDING_APP_ID }}
@@ -119,6 +120,14 @@ jobs:
           repositories: |
             ${{ env.app_repo_name }}
             GitOps-Repo
+
+      # The usual cause: the App is not installed on the app's repository.
+      - name: Explain a token failure
+        if: env.MODE == 'approved' && steps.app-token.outcome != 'success'
+        run: |
+          gh issue comment "$ISSUE" --body "$(printf ':x: Could not get a token for **%s** and **GitOps-Repo**. Usually the GitHub App is not installed on the app repository: in the org settings, GitHub Apps, *goldenpath-bot*, *Configure*, choose **All repositories** (or add the repository), then add the **approved** label again.' "$repository")"
+          gh issue edit "$ISSUE" --remove-label approved
+          exit 1
 
       # One PR per repository, on branch onboard/golden-path. Files are copied
       # over the checkout, so re-running updates the same branch.
