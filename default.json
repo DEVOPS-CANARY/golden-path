@@ -151,5 +151,8 @@
       "versioningTemplate": "semver"
     }
   ],
-  "minimumReleaseAgeBehaviour": "timestamp-optional"
+  "minimumReleaseAgeBehaviour": "timestamp-optional",
+  "statusCheckNames": {
+    "minimumReleaseAge": null
+  }
 }

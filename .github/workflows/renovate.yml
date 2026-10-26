@@ -8,6 +8,11 @@
 # `extends: ["github>DEVOPS-CANARY/golden-path"]`, which is the shared preset
 # default.json in this repo: one place to decide how updates are grouped,
 # scheduled and labelled.
+#
+# The App needs Contents, Pull requests and Workflows (read & write); Issues
+# (read & write) for the Dependency Dashboard and Dependabot alerts (read) for
+# vulnerability-driven updates are optional. The preset switches off the
+# minimumReleaseAge commit status, so Commit statuses is not needed.
 name: Renovate
 
 on:
