@@ -49,8 +49,11 @@ def fail(msg: str):
 def main(path: str):
     body = open(path, encoding="utf-8").read()
     raw = {FIELDS[k]: v for k, v in sections(body).items() if k in FIELDS}
-    get = lambda k, d="": (raw.get(k, d) or d).strip()
     empty = {"", "_No response_", "None"}
+
+    def get(k, d=""):
+        v = (raw.get(k) or "").strip()
+        return d if v in empty else v
 
     app = get("app")
     if not NAME.match(app):
@@ -62,7 +65,7 @@ def main(path: str):
     frontend = get("frontend", "nextjs")
     if backend == "none" and frontend == "none":
         fail("an app needs at least a backend or a frontend")
-    worker = "" if get("worker") in empty else get("worker")
+    worker = get("worker")
     if worker and not NAME.match(worker):
         fail(f"worker name '{worker}' must be lowercase letters, digits and '-'")
     if worker and backend == "none":

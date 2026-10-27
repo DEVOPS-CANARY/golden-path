@@ -34,8 +34,16 @@ def check(path):
         labels.append(attrs.get("label"))
         if block.get("id"):
             ids.append(block["id"])
-        if kind == "dropdown" and not attrs.get("options"):
-            problems.append(f"body[{n}]: dropdown needs options")
+        if kind == "dropdown":
+            opts = attrs.get("options") or []
+            if not opts:
+                problems.append(f"body[{n}]: dropdown needs options")
+            # Documented rule: with a default, "None"/"n/a" options are refused.
+            reserved = {str(o).strip().lower() for o in opts} & {"none", "n/a"}
+            if "default" in attrs and reserved:
+                problems.append(
+                    f"body[{n}]: dropdown has a default and a reserved option {sorted(reserved)}"
+                )
         if kind == "checkboxes":
             opts = attrs.get("options") or []
             if not opts or any(not o.get("label") for o in opts):

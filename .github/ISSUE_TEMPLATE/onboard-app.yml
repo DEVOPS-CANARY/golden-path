@@ -33,7 +33,6 @@ body:
       label: Backend
       description: A NestJS service in `backend/` (folder, package.json, scripts `format:check lint typecheck test build`)
       options: [nestjs, none]
-      default: 0
     validations:
       required: true
   - type: input
@@ -47,14 +46,12 @@ body:
       label: Backend database layer
       description: Decides what the image ships so migrations run from it with plain `node`
       options: [prisma, typeorm, none]
-      default: 0
   - type: dropdown
     id: frontend
     attributes:
       label: Frontend
       description: "A Next.js app in `frontend/` with `output: 'standalone'` in its Next config"
       options: [nextjs, none]
-      default: 0
     validations:
       required: true
   - type: input
