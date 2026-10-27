@@ -129,6 +129,56 @@ jobs:
           gh issue edit "$ISSUE" --remove-label approved
           exit 1
 
+      # The branches the pipeline expects: develop (UAT), staging, main (releases).
+      # Missing ones are created from the default branch; existing ones are kept.
+      - name: Create the branches
+        if: env.MODE == 'approved'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          default=$(gh api "repos/$repository" --jq .default_branch)
+          sha=$(gh api "repos/$repository/git/ref/heads/$default" --jq .object.sha)
+          created=""
+          for branch in develop staging main; do
+            if gh api "repos/$repository/git/ref/heads/$branch" --silent 2>/dev/null; then continue; fi
+            gh api -X POST "repos/$repository/git/refs" -f ref="refs/heads/$branch" -f sha="$sha" --silent
+            created="$created $branch"
+          done
+          created=${created# }
+          echo "branches_created=${created:-none, all existed}" >> "$GITHUB_ENV"
+          echo "Branches created from $default: ${created:-none, all existed}"
+
+      # Environments need Administration: write, which the onboarding App does
+      # not have on purpose. An optional second App holding only that permission
+      # (variable ONBOARDING_ADMIN_APP_ID, secret ONBOARDING_ADMIN_APP_KEY) creates
+      # them with a one-hour token scoped to this one repository. Without it, the
+      # app PR tells a repository admin which script to run.
+      - name: Mint an admin token (optional)
+        if: env.MODE == 'approved' && vars.ONBOARDING_ADMIN_APP_ID != ''
+        id: admin-token
+        continue-on-error: true # the PR then carries the manual step
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.ONBOARDING_ADMIN_APP_ID }}
+          private-key: ${{ secrets.ONBOARDING_ADMIN_APP_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ env.app_repo_name }}
+
+      - name: Create the environments
+        if: env.MODE == 'approved'
+        env:
+          ADMIN_TOKEN: ${{ steps.admin-token.outputs.token }}
+        run: |
+          owner=$(jq -r .owner answers.json)
+          if [ -n "$ADMIN_TOKEN" ]; then
+            GH_TOKEN="$ADMIN_TOKEN" scripts/repo-environments.sh "$repository" "$owner"
+            # shellcheck disable=SC2016 # backticks are Markdown
+            printf -- '- [x] GitHub Environments `uat` (develop), `staging` (staging, hotfix/*), `production` (main, tags v*; reviewer %s): created by the golden path\n' "$owner" > environments.md
+          else
+            # shellcheck disable=SC2016 # backticks are Markdown
+            printf -- '- [ ] GitHub Environments `uat`, `staging`, `production`: a repository admin runs `scripts/repo-environments.sh %s %s` from a golden-path checkout (no admin App is configured, see README)\n' "$repository" "$owner" > environments.md
+          fi
+
       # One PR per repository, on branch onboard/golden-path. Files are copied
       # over the checkout, so re-running updates the same branch.
       - name: Open the pull requests
@@ -167,8 +217,8 @@ jobs:
           Opened by the golden path from $GITHUB_SERVER_URL/$GH_REPO/issues/$ISSUE.
 
           Adds the shared pipeline caller and the Dockerfiles for **$app**. Before merging:
-          - [ ] Branches \`develop\`, \`staging\`, \`main\` exist; hotfixes go on \`hotfix/<name>\`
-          - [ ] GitHub Environments \`uat\` (develop), \`staging\` (staging, hotfix/*), \`production\` (main and tags v*, required reviewer)
+          - [x] Branches \`develop\`, \`staging\`, \`main\` exist (created by the golden path: $branches_created); hotfixes go on \`hotfix/<name>\`
+          $(cat environments.md)
           - [ ] Commit messages follow Conventional Commits (feat:, fix:, ...): they decide the version numbers
           - [ ] Each component folder has the scripts the pipeline runs: \`format:check lint typecheck test build\`
           - [ ] The GitOps PR is merged first (the first deploy needs the environment to exist)

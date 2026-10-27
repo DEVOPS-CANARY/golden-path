@@ -18,7 +18,9 @@ declares what its app needs; this repo does the rest through reviewed pull reque
    package manager, what it needs (Postgres, Redis, Kafka), owner, readiness ticks.
 2. Add the label **preview**: the workflow renders the templates and posts every generated
    file on the issue. Fix the form if needed and preview again.
-3. A platform maintainer adds the label **approved**: the workflow opens two pull requests
+3. A platform maintainer adds the label **approved**: the workflow prepares the app
+   repository (branches `develop`, `staging`, `main` if missing; the three GitHub
+   Environments when the admin App below is configured), then opens two pull requests
    and links them on the issue:
    - in the app repository: `.github/workflows/pipeline.yml` (the caller), `docker/*.Dockerfile`
      and their `.dockerignore`, `.hadolint.yaml`, and `.golden-path.yml` (the answers, so
@@ -26,9 +28,10 @@ declares what its app needs; this repo does the rest through reviewed pull reque
    - in GitOps-Repo: `apps/<app>/values.yaml`, `apps/<app>/envs/uat/values.yaml` (placeholder
      digests until the first deploy) and `envs/uat/secrets/README.md` with the exact sealing
      commands.
-4. The PR checklists say what is left for people: branches and GitHub Environments, the
-   `GITOPS_DEPLOY_KEY` secret, sealed secrets, database/Redis/Kafka credentials. Merge the
-   GitOps PR first, then the app PR; the first merge to `develop` deploys to UAT.
+4. The PR checklists say what is left for people: the environments if no admin App is
+   configured (one script run by a repository admin), sealed secrets, database/Redis/Kafka
+   credentials. Merge the GitOps PR first, then the app PR; the first merge to `develop`
+   deploys to UAT.
 
 What the templates produce is what logistics runs today: the same pipeline caller, the
 same Dockerfile structure (multi-stage, pinned base by digest, non-root, no package
@@ -41,6 +44,14 @@ App ID is the repository variable `ONBOARDING_APP_ID`, its private key the secre
 file). Each run mints a token that lives one hour and only covers the two repositories it
 touches; commits are authored by `goldenpath-bot[bot]`. Without the App, **preview** works and
 **approved** stops with a message on the issue.
+
+**Optional: an admin App for environments.** Creating GitHub Environments and their branch
+policies needs *Administration: write*, which `goldenpath-bot` deliberately does not have. A
+second App holding only that permission (variable `ONBOARDING_ADMIN_APP_ID`, secret
+`ONBOARDING_ADMIN_APP_KEY`) lets the workflow create `uat`, `staging` and `production` (with
+the form's owner as required reviewer) through a one-hour token scoped to the one repository
+being onboarded. Without it, the app PR asks a repository admin to run
+`scripts/repo-environments.sh <owner/repo> <reviewer>`, the same script, by hand.
 
 By hand, without the form (needs [Copier](https://copier.readthedocs.io) 9.18+):
 
@@ -146,7 +157,7 @@ as `GITOPS_DEPLOY_KEY`.)
   environment, using the `rssb-app` chart, with each component's image as
   `repository: ghcr.io/<org>/<app>-<component>` followed by a `digest:` line.
 
-The onboarding template (next step) creates all of this.
+The onboarding workflow creates all of this (environments: see the admin App above).
 
 ## Versions
 

@@ -88,7 +88,7 @@ body:
     id: owner
     attributes:
       label: Owner
-      description: Team or person responsible for the app (GitHub handle)
+      description: Team or person responsible for the app, and the required reviewer for production deploys (GitHub handle, or org/team-slug for a team)
     validations:
       required: true
   - type: checkboxes
