@@ -52,7 +52,7 @@ body:
     id: frontend
     attributes:
       label: Frontend
-      description: A Next.js app in `frontend/` with `output: "standalone"`
+      description: "A Next.js app in `frontend/` with `output: 'standalone'` in its Next config"
       options: [nextjs, none]
       default: 0
     validations:
@@ -99,7 +99,7 @@ body:
       options:
         - label: Health endpoints for liveness and readiness (A3)
         - label: All configuration from environment variables; optional variables really optional (A5)
-        - label: Stateless across replicas: no in-memory sessions, rate limits or socket rooms (A7)
+        - label: "Stateless across replicas: no in-memory sessions, rate limits or socket rooms (A7)"
         - label: Migrations runnable from the built image with plain `node` (A9, A14)
         - label: No environment-specific `NEXT_PUBLIC_*` values (A2, A17)
         - label: Secrets inventory complete, with an owner per value (A18)

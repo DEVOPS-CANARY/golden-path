@@ -94,3 +94,6 @@ jobs:
           sed 's/^sample$/Sample App/' templates/tests/issue-body.md > /tmp/bad.md
           if python scripts/onboarding_answers.py /tmp/bad.md 2>/dev/null; then echo "::error::an invalid app name was accepted"; exit 1; fi
           echo "parser: valid form accepted, invalid name refused"
+      # GitHub ignores a form it cannot parse and silently shows a blank issue instead.
+      - name: The issue form
+        run: python scripts/check_issue_form.py .github/ISSUE_TEMPLATE/*.yml
