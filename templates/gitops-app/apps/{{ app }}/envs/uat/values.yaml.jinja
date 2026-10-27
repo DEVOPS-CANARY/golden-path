@@ -9,7 +9,7 @@ global:
   imagePullSecrets: [ghcr-pull] # sealed in secrets/ (see secrets/README.md)
 
 components:
-{%- if backend != 'none' %}
+{%- if backend != 'not-needed' %}
   backend:
     image:
       repository: {{ registry }}/{{ app }}-backend
@@ -28,7 +28,7 @@ components:
       KAFKA_TOPIC_PREFIX: uat.{{ app }}.
 {%- endif %}
 {%- endif %}
-{%- if frontend != 'none' %}
+{%- if frontend != 'not-needed' %}
 
   frontend:
     image:

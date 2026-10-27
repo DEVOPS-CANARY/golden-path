@@ -4,7 +4,7 @@
 # Rendered by the platform's golden path (https://github.com/{{ repository }}).
 
 components:
-{%- if backend != 'none' %}
+{%- if backend != 'not-needed' %}
   backend:
     type: nestjs
     port: {{ backend_port }}
@@ -25,7 +25,7 @@ components:
       command: [node, node_modules/typeorm/cli.js, migration:run, -d, dist/data-source.js]
 {%- endif %}
 {%- endif %}
-{%- if frontend != 'none' %}
+{%- if frontend != 'not-needed' %}
 
   frontend:
     type: nextjs
