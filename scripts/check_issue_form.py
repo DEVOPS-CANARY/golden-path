@@ -38,12 +38,11 @@ def check(path):
             opts = attrs.get("options") or []
             if not opts:
                 problems.append(f"body[{n}]: dropdown needs options")
-            # Documented rule: with a default, "None"/"n/a" options are refused.
+            # GitHub refuses an option named "none" or "n/a" (the docs only
+            # mention it for dropdowns with a default; tested: it is always).
             reserved = {str(o).strip().lower() for o in opts} & {"none", "n/a"}
-            if "default" in attrs and reserved:
-                problems.append(
-                    f"body[{n}]: dropdown has a default and a reserved option {sorted(reserved)}"
-                )
+            if reserved:
+                problems.append(f"body[{n}]: dropdown has a reserved option {sorted(reserved)}")
         if kind == "checkboxes":
             opts = attrs.get("options") or []
             if not opts or any(not o.get("label") for o in opts):

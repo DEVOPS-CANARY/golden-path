@@ -26,7 +26,7 @@ jobs:
       packages: write # push images to GHCR
     with:
       app: {{ app }}
-      components: '[{% set parts = [] %}{% if backend != 'none' %}{% set _ = parts.append('"backend"') %}{% endif %}{% if frontend != 'none' %}{% set _ = parts.append('"frontend"') %}{% endif %}{{ parts | join(', ') }}]'
+      components: '[{% set parts = [] %}{% if backend != 'not-needed' %}{% set _ = parts.append('"backend"') %}{% endif %}{% if frontend != 'not-needed' %}{% set _ = parts.append('"frontend"') %}{% endif %}{{ parts | join(', ') }}]'
 {%- if package_manager != 'npm' %}
       package-manager: {{ package_manager }}
 {%- endif %}

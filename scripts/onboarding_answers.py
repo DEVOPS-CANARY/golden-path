@@ -63,12 +63,12 @@ def main(path: str):
         fail(f"repository '{repository}' must be owner/name")
     backend = get("backend", "nestjs")
     frontend = get("frontend", "nextjs")
-    if backend == "none" and frontend == "none":
+    if backend == "not-needed" and frontend == "not-needed":
         fail("an app needs at least a backend or a frontend")
     worker = get("worker")
     if worker and not NAME.match(worker):
         fail(f"worker name '{worker}' must be lowercase letters, digits and '-'")
-    if worker and backend == "none":
+    if worker and backend == "not-needed":
         fail("a worker runs the backend image, so it needs a backend")
     port = get("backend_port", "3001")
     if not port.isdigit() or not 1 <= int(port) <= 65535:

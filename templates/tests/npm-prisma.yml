@@ -4,7 +4,7 @@ repository: DEVOPS-CANARY/shop
 backend: nestjs
 backend_port: 4000
 backend_orm: prisma
-frontend: none
+frontend: not-needed
 worker: ""
 package_manager: npm
 needs_postgres: true

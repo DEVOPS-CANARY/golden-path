@@ -34,26 +34,26 @@ repository:
 backend:
   type: str
   help: Backend component (folder backend/)
-  choices: [nestjs, none]
+  choices: [nestjs, not-needed]
   default: nestjs
 
 backend_port:
   type: int
   help: Port the backend listens on
   default: 3001
-  when: "{{ backend != 'none' }}"
+  when: "{{ backend != 'not-needed' }}"
 
 backend_orm:
   type: str
   help: Database layer of the backend (decides what the image ships for migrations)
-  choices: [prisma, typeorm, none]
+  choices: [prisma, typeorm, not-needed]
   default: prisma
-  when: "{{ backend != 'none' }}"
+  when: "{{ backend != 'not-needed' }}"
 
 frontend:
   type: str
   help: Frontend component (folder frontend/)
-  choices: [nextjs, none]
+  choices: [nextjs, not-needed]
   default: nextjs
 
 worker:
@@ -61,7 +61,7 @@ worker:
   help: Name of a background worker that runs the backend image with its own command (empty = none)
   default: ""
   validator: "{% if worker and not worker | regex_search('^[a-z][a-z0-9-]{0,30}$') %}lowercase letters, digits and '-' only{% endif %}"
-  when: "{{ backend != 'none' }}"
+  when: "{{ backend != 'not-needed' }}"
 
 worker_command:
   type: str
