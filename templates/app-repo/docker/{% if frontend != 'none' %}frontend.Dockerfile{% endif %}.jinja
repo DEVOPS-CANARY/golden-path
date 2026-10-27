@@ -34,10 +34,12 @@ FROM ${NODE_IMAGE} AS build
 WORKDIR /app
 ENV NEXT_TELEMETRY_DISABLED=1
 # The manifests are bind-mounted, not copied: they never become a layer, and the
-# package manager's download cache lives in a BuildKit cache mount.
+# package manager's download cache lives in a BuildKit cache mount. sharing=locked:
+# BuildKit runs stages in parallel and Yarn classic's cache breaks with two writers
+# ("Integrity check failed", half-written tarballs); one install at a time.
 RUN --mount=type=bind,source=package.json,target=package.json \
     --mount=type=bind,source={{ lockfile }},target={{ lockfile }} \
-    --mount=type=cache,target={{ cache }} \
+    --mount=type=cache,target={{ cache }},sharing=locked \
     {{ install }}
 COPY . .
 # Inlined into the browser bundle by `next build`.

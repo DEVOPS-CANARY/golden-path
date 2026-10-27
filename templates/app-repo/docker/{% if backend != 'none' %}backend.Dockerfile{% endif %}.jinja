@@ -46,10 +46,12 @@ WORKDIR /app
 # --- build: full toolchain, compiles TypeScript ---------------------------------
 FROM base AS build
 # The manifests are bind-mounted, not copied: they never become a layer, and the
-# package manager's download cache lives in a BuildKit cache mount.
+# package manager's download cache lives in a BuildKit cache mount. sharing=locked:
+# BuildKit runs stages in parallel and Yarn classic's cache breaks with two writers
+# ("Integrity check failed", half-written tarballs); one install at a time.
 RUN --mount=type=bind,source=package.json,target=package.json \
     --mount=type=bind,source={{ lockfile }},target={{ lockfile }} \
-    --mount=type=cache,target={{ cache }} \
+    --mount=type=cache,target={{ cache }},sharing=locked \
     {{ install }}
 COPY . .
 RUN {% if backend_orm == 'prisma' %}{% if package_manager == 'yarn' %}yarn prisma generate{% else %}npx prisma generate{% endif %} && {% endif %}{{ run }} build
@@ -58,7 +60,7 @@ RUN {% if backend_orm == 'prisma' %}{% if package_manager == 'yarn' %}yarn prism
 FROM base AS prod-deps
 RUN --mount=type=bind,source=package.json,target=package.json \
     --mount=type=bind,source={{ lockfile }},target={{ lockfile }} \
-    --mount=type=cache,target={{ cache }} \
+    --mount=type=cache,target={{ cache }},sharing=locked \
     {{ install_prod }}
 
 # --- runtime --------------------------------------------------------------------
