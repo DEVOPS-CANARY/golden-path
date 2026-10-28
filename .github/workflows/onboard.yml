@@ -77,7 +77,7 @@ jobs:
             echo "::notice::$repository is not readable with the workflow token; checked after the App token is minted"
             exit 0
           fi
-          if ! scripts/check-app-repo.sh "$repository" answers.json > problems.txt; then
+          if ! scripts/check-app-repo.sh "$repository" answers.json > problems.txt 2>&1; then
             { printf ':x: **%s** does not match the form, please fix one or the other and add the label again:\n\n' "$repository"; sed 's/^/- /' problems.txt; } > problem.md
             gh issue comment "$ISSUE" --body-file problem.md
             gh issue edit "$ISSUE" --remove-label "$MODE"
@@ -150,7 +150,7 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
-          if ! scripts/check-app-repo.sh "$repository" answers.json > problems.txt; then
+          if ! scripts/check-app-repo.sh "$repository" answers.json > problems.txt 2>&1; then
             export GH_TOKEN="${{ secrets.GITHUB_TOKEN }}"
             { printf ':x: **%s** does not match the form, please fix one or the other and add the label again:\n\n' "$repository"; sed 's/^/- /' problems.txt; } > problem.md
             gh issue comment "$ISSUE" --body-file problem.md
