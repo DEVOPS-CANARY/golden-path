@@ -89,7 +89,8 @@ jobs:
               -f "$out/gitops/apps/$app/values.yaml" -f "$out/gitops/apps/$app/envs/uat/values.yaml" \
               | sed -n '/^---/,$p' \
               | docker run --rm -i "$KUBECONFORM_IMAGE" -strict -summary -schema-location default \
-                  -schema-location "$CRD_SCHEMAS/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json"
+                  -schema-location "$CRD_SCHEMAS/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json" \
+                  -schema-location "https://raw.githubusercontent.com/DEVOPS-CANARY/helm-charts/main/schemas/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json"
             echo "::endgroup::"
           done
       - name: The form parser
