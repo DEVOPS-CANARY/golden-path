@@ -35,6 +35,12 @@ jobs:
         with:
           persist-credentials: false
       - run: docker run --rm -v "$PWD:/repo" -w /repo "$ACTIONLINT_IMAGE" -color
+      # Scripts committed from Windows lose their executable bit; the runner then
+      # answers "Permission denied" at the worst moment (G73 follow-up).
+      - name: Scripts are executable in git
+        run: |
+          bad=$(git ls-files -s 'scripts/*.sh' | awk '$1 != "100755" {print $4}')
+          if [ -n "$bad" ]; then echo "::error::not executable in git (git update-index --chmod=+x): $bad"; exit 1; fi
 
   templates:
     name: Render and check the templates
