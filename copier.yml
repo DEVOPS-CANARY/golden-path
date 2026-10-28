@@ -113,7 +113,7 @@ registry:
 chart_version:
   type: str
   help: rssb-app chart version to pin for UAT
-  default: "0.5.0"
+  default: "0.6.1"
 
 host_domain:
   type: str
