@@ -68,6 +68,22 @@ jobs:
           jq -r 'to_entries[] | "\(.key)=\(.value)"' answers.json | grep -v '^owner=' >> "$GITHUB_ENV"
           echo "app_repo_name=$(jq -r '.repository | split("/")[1]' answers.json)" >> "$GITHUB_ENV"
 
+      # The repository must match the answers (folders, package.json, the chosen
+      # package manager's lockfile), or the first pipeline run fails in three jobs.
+      # Repositories this token cannot read are checked again with the App token.
+      - name: Check the repository against the answers
+        run: |
+          if ! gh api "repos/$repository" --silent 2>/dev/null; then
+            echo "::notice::$repository is not readable with the workflow token; checked after the App token is minted"
+            exit 0
+          fi
+          if ! scripts/check-app-repo.sh "$repository" answers.json > problems.txt; then
+            { printf ':x: **%s** does not match the form, please fix one or the other and add the label again:\n\n' "$repository"; sed 's/^/- /' problems.txt; } > problem.md
+            gh issue comment "$ISSUE" --body-file problem.md
+            gh issue edit "$ISSUE" --remove-label "$MODE"
+            exit 1
+          fi
+
       # Rendered from this repo's latest release tag on GitHub (Copier's default
       # for a git template), not from the checkout: the rendered repo then
       # records `_src_path: gh:DEVOPS-CANARY/golden-path` and `_commit: vX.Y.Z`,
@@ -129,6 +145,19 @@ jobs:
           gh issue edit "$ISSUE" --remove-label approved
           exit 1
 
+      - name: Check a private repository against the answers
+        if: env.MODE == 'approved'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          if ! scripts/check-app-repo.sh "$repository" answers.json > problems.txt; then
+            export GH_TOKEN="${{ secrets.GITHUB_TOKEN }}"
+            { printf ':x: **%s** does not match the form, please fix one or the other and add the label again:\n\n' "$repository"; sed 's/^/- /' problems.txt; } > problem.md
+            gh issue comment "$ISSUE" --body-file problem.md
+            gh issue edit "$ISSUE" --remove-label approved
+            exit 1
+          fi
+
       # The branches the pipeline expects: develop (UAT), staging, main (releases).
       # Missing ones are created from the default branch; existing ones are kept.
       - name: Create the branches
@@ -189,6 +218,8 @@ jobs:
           GITOPS_REPO: ${{ github.repository_owner }}/GitOps-Repo
         run: |
           # Commits are authored by the App's bot user, so history shows what was automated.
+          # The app PR's title is also its commit message, which the pipeline's
+          # Conventional Commits gate checks: it must be `ci: ...`.
           bot_id=$(GH_TOKEN="$APP_TOKEN" gh api "/users/${APP_SLUG}[bot]" --jq .id)
           git config --global user.name "${APP_SLUG}[bot]"
           git config --global user.email "${bot_id}+${APP_SLUG}[bot]@users.noreply.github.com"
@@ -236,7 +267,7 @@ jobs:
 
           Once merged, Argo CD creates namespace \`$app-uat\` (walled by policy) and waits for the first image.
           EOF
-          open_pr "$repository" "$OUT/app" develop "Golden path: pipeline caller and Dockerfiles for $app" app-pr.md app-pr.url 2>&1 | tee -a push.log
+          open_pr "$repository" "$OUT/app" develop "ci: add the golden path pipeline and Dockerfiles for $app" app-pr.md app-pr.url 2>&1 | tee -a push.log
           open_pr "$GITOPS_REPO" "$OUT/gitops" main "Onboard $app: UAT environment" gitops-pr.md gitops-pr.url 2>&1 | tee -a push.log
           export GH_TOKEN="${{ secrets.GITHUB_TOKEN }}"
           # shellcheck disable=SC2016 # backticks in the comment text are Markdown, not shell
