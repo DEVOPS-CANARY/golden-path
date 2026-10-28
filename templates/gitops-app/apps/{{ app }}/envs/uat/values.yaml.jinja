@@ -21,12 +21,6 @@ components:
       # environment's Redis user may use (REDIS_URL is sealed in backend-secrets).
       REDIS_KEY_PREFIX: "{{ app }}:uat:"
 {%- endif %}
-{%- if needs_kafka %}
-      # Kafka: this user may only use topics and consumer groups starting with
-      # the prefix (KAFKA_PASSWORD is sealed in backend-secrets).
-      KAFKA_USERNAME: {{ app }}_uat
-      KAFKA_TOPIC_PREFIX: uat.{{ app }}.
-{%- endif %}
 {%- endif %}
 {%- if frontend != 'not-needed' %}
 
@@ -42,9 +36,6 @@ components:
       repository: {{ registry }}/{{ app }}-backend
       digest: sha256:0000000000000000000000000000000000000000000000000000000000000000 # placeholder: the first deploy from develop writes the real digest
 {%- if needs_kafka %}
-    env:
-      KAFKA_USERNAME: {{ app }}_uat
-      KAFKA_TOPIC_PREFIX: uat.{{ app }}.
     autoscaling: # KEDA lag scaling: shared settings in ../../values.yaml
       kafka:
         topic: uat.{{ app }}.events # CHANGE to the topic the worker consumes

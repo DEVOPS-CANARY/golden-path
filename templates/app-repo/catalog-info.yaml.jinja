@@ -1,0 +1,43 @@
+# Backstage catalog entry (golden path layer 7): what this app is, who owns it
+# and where it runs. A developer portal reads these files from every repository;
+# until one runs, the file is the app's card in the platform's catalog.
+# Format: https://backstage.io/docs/features/software-catalog/descriptor-format
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: {{ app }}
+  description: {{ app }} on the platform's golden path
+  annotations:
+    github.com/project-slug: {{ repository }}
+    # The GitOps folder that says what runs where (values, environments, sealed secrets)
+    platform/gitops: https://github.com/{{ gitops_repo }}/tree/main/apps/{{ app }}
+    argocd/app-selector: product={{ app }}
+  tags:
+{%- if backend != 'not-needed' %}
+    - nestjs
+{%- endif %}
+{%- if frontend != 'not-needed' %}
+    - nextjs
+{%- endif %}
+{%- if needs_postgres %}
+    - postgresql
+{%- endif %}
+{%- if needs_kafka %}
+    - kafka
+{%- endif %}
+  links:
+    - url: http://uat.{{ app }}.{{ host_domain }}
+      title: UAT
+spec:
+  type: service
+  lifecycle: experimental
+  owner: {{ owner }}
+{%- if needs_postgres or needs_kafka %}
+  dependsOn:
+{%- if needs_postgres %}
+    - resource:postgresql
+{%- endif %}
+{%- if needs_kafka %}
+    - resource:kafka
+{%- endif %}
+{%- endif %}
