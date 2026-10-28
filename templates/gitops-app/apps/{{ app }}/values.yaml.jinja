@@ -17,11 +17,17 @@ components:
       managed: true
 {%- endif %}
     ingress: { enabled: true, path: /api, stripPrefix: true } # /api/users reaches the app as /users
+{%- if needs_kafka %}
+    # Its own Kafka user, fenced to <env>.{{ app }}.* by ACLs, and its topics,
+    # created by the platform (Crossplane provider-kafka). Credentials reach the
+    # pods as KAFKA_USERNAME/PASSWORD/BROKERS, the prefix as KAFKA_TOPIC_PREFIX.
+    kafka:
+      managed: true
+      topics:
+        - { name: events, partitions: 3 } # CHANGE to the topics the app produces
+{%- endif %}
     env:
       NODE_ENV: production
-{%- if needs_kafka %}
-      KAFKA_BROKERS: host.minikube.internal:19092 # LAB: Kafka in Docker next to the cluster
-{%- endif %}
 {%- if backend_orm == 'prisma' %}
     migration:
       enabled: true # run by Argo CD before the new pods roll out
@@ -46,17 +52,17 @@ components:
   {{ worker }}:
     type: worker
     command: [{% for part in worker_command.split() %}{{ part }}{% if not loop.last %}, {% endif %}{% endfor %}]
-{%- if needs_kafka %}
-    secretRefs: [{{ worker }}-secrets] # only what the worker needs (least privilege)
-{%- endif %}
 {%- if needs_postgres %}
     database:
       existingSecret: backend-db # the backend's database, same DATABASE_URL
 {%- endif %}
+{%- if needs_kafka %}
+    kafka:
+      existingSecret: backend-kafka # the backend's user and prefix, same variables
+{%- endif %}
     env:
       NODE_ENV: production
 {%- if needs_kafka %}
-      KAFKA_BROKERS: host.minikube.internal:19092 # LAB
     autoscaling:
       enabled: true
       metric: kafka
