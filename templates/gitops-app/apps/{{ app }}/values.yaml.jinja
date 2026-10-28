@@ -8,7 +8,14 @@ components:
   backend:
     type: nestjs
     port: {{ backend_port }}
-    secretRefs: [backend-secrets] # DATABASE_URL, JWT_SECRET, ... (sealed per environment)
+    secretRefs: [backend-secrets] # JWT_SECRET, ... (sealed per environment)
+{%- if needs_postgres %}
+    # Its own PostgreSQL role and database, <app>_<env>, created by the platform
+    # (Crossplane provider-sql) from this declaration; the generated password
+    # reaches the pods as DATABASE_URL. Nothing to request, nothing to seal.
+    database:
+      managed: true
+{%- endif %}
     ingress: { enabled: true, path: /api, stripPrefix: true } # /api/users reaches the app as /users
     env:
       NODE_ENV: production
@@ -39,7 +46,13 @@ components:
   {{ worker }}:
     type: worker
     command: [{% for part in worker_command.split() %}{{ part }}{% if not loop.last %}, {% endif %}{% endfor %}]
+{%- if needs_kafka %}
     secretRefs: [{{ worker }}-secrets] # only what the worker needs (least privilege)
+{%- endif %}
+{%- if needs_postgres %}
+    database:
+      existingSecret: backend-db # the backend's database, same DATABASE_URL
+{%- endif %}
     env:
       NODE_ENV: production
 {%- if needs_kafka %}

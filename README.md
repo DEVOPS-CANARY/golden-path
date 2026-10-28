@@ -9,6 +9,7 @@ declares what its app needs; this repo does the rest through reviewed pull reque
 | **Onboarding**: the "Onboard an app" issue form, Copier templates for the app repo and the GitOps folder, a workflow that opens the PRs | ✅ v1.2 |
 | Per-namespace guardrails (Kyverno): walls, quota, limits, image rule | ✅ in [GitOps-Repo](https://github.com/DEVOPS-CANARY/GitOps-Repo) `platform/policies` |
 | Bot identity: the `goldenpath-bot` GitHub App (short-lived tokens, no personal tokens) | ✅ onboarding and deploys (deploy keys retired); releases next |
+| **Infrastructure as declarations** (layer 6): an app's PostgreSQL role and database declared in its GitOps values (`database.managed`), created by Crossplane provider-sql in [GitOps-Repo](https://github.com/DEVOPS-CANARY/GitOps-Repo) `platform/crossplane`; no `DATABASE_URL` to seal | ✅ v1.7 (todo) |
 | **Versioned releases**: Conventional Commits check, release-please release PR, tag → prod, images tagged with the version | ✅ v1.4 |
 | **Automatic updates**: Renovate runs here as the App on weekdays and opens PRs in every listed repo (actions, images, charts, npm); each repo extends the shared preset `default.json` | ✅ v1.5 |
 
