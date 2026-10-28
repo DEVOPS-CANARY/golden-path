@@ -16,8 +16,10 @@ declares what its app needs; this repo does the rest through reviewed pull reque
 
 1. Open an issue from the **Onboard an app** form: app name, repository, components,
    package manager, what it needs (Postgres, Redis, Kafka), owner, readiness ticks.
-2. Add the label **preview**: the workflow renders the templates and posts every generated
-   file on the issue. Fix the form if needed and preview again.
+2. Add the label **preview**: the workflow checks the repository against the answers
+   (component folders, `package.json`, the chosen package manager's lockfile), renders the
+   templates and posts every generated file on the issue. Fix the form if needed and preview
+   again.
 3. A platform maintainer adds the label **approved**: the workflow prepares the app
    repository (branches `develop`, `staging`, `main` if missing; the three GitHub
    Environments when the admin App below is configured), then opens two pull requests

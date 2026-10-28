@@ -69,8 +69,8 @@ body:
     id: package_manager
     attributes:
       label: Package manager
+      description: The one whose lockfile is in the repository (`package-lock.json` or `yarn.lock`)
       options: [npm, yarn]
-      default: 0
     validations:
       required: true
   - type: checkboxes
